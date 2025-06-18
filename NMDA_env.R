@@ -3,6 +3,8 @@ library(lubridate)
 library(dplyr)
 library(stringr)
 library(tidyr)
+library(writexl)
+library(purrr)
 source("functions.R")
 setwd("/Users/banlujie/NMDA")
 
@@ -12,7 +14,6 @@ NMDA1<-read_xlsx("/Users/banlujie/NMDA/data/air_quality/NMDA_1.xlsx")
 NMDA1 <- NMDA1 %>%
   mutate(`Date of onset` = clean_mixed_dates(`Date of onset`))
 summary(NMDA1)
-AQI<-read_xlsx("~/NMDA/data/air_quality/month/AQI/2014_AQI_monthly.xlsx")
 
 ##Data cleaning
 {
@@ -49,19 +50,29 @@ city_map <- data.frame(
 )
 
 city_recode_vector <- setNames(city_map$city_en, city_map$city_cn)
-aqi_data_cleaned <- AQI %>%
-  mutate(
-    # 统一处理城市名列：移除“市”字，并去掉首尾空格
-    # across() 可以对指定的列进行操作，这里我们假设列名叫'city'
-    across(city, ~ str_trim(str_remove(.x, "市")))
-  )
 
-aqi_folder_path <- "~/NMDA/data/air_quality/month/AQI" 
 
-# 4. Run the function!
-# This single line executes the entire workflow for all 10 years of data.
-all_years_summary <- process_yearly_aqi_data(
-  folder_path = aqi_folder_path,
-  city_map_df = city_map,
-  value_name = "aqi" # We specify the values represent "aqi"
+main_folder <- "~/NMDA/data/air_quality/month"
+
+# 4. 一行代码，处理所有子文件夹中的所有文件！
+all_metrics_summary <- process_all_subfolder_data(
+  main_folder_path = main_folder,
+  city_map_df = city_map
 )
+
+final_patient_data <- add_lagged_exposure(
+  patient_data = NMDA1,
+  summary_data_wide = all_metrics_summary, # <-- 传入的是宽格式数据
+  
+  # 下面的参数通常不需要改，除非您的列名不同
+  date_col_patient = "Date of onset",
+  city_col_patient = "Residential address",
+  date_col_summary = "year_month",
+  city_col_summary = "city",
+  
+  lags_vector = 0:3
+)
+patient_output_path <- "/Users/banlujie/NMDA/data/air_quality/NMDA1_with_pollution.xlsx"
+
+
+write_xlsx(final_patient_data, path = patient_output_path)

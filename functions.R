@@ -136,6 +136,8 @@ process_yearly_aqi_data <- function(folder_path, city_map_df, value_name = "valu
   
   return(final_summary)
 }
+
+
 #' 递归读取所有子文件夹中的数据并处理汇总
 #'
 #' 遍历指定主文件夹下的所有子文件夹，读取 "文件夹名_yyyy_monthly.xlsx" 格式的文件，
@@ -147,31 +149,31 @@ process_yearly_aqi_data <- function(folder_path, city_map_df, value_name = "valu
 
 process_all_subfolder_data <- function(main_folder_path, city_map_df) {
   
-  # Step 1: 递归地查找所有符合格式的 Excel 文件
-  # recursive = TRUE 会进入所有子文件夹
-  # pattern 使用 "_\\d{4}_monthly\\.xlsx$" 来匹配文件名，更具通用性
+  # Step 1: 查找所有符合新命名格式的文件
   all_files <- list.files(
     path = main_folder_path,
-    pattern = "_\\d{4}_monthly.xlsx$",
+    
+    # --- !! 这里是唯一的修改点 !! ---
+    # 更新正则表达式以匹配 "yyyy_..." 开头的文件名
+    pattern = "^\\d{4}_.*_monthly\\.xlsx$",
+    # --- 修改结束 ---
+    
     recursive = TRUE,
     full.names = TRUE
   )
   
   if (length(all_files) == 0) {
-    stop("在指定文件夹及其子文件夹中没有找到任何匹配的文件。")
+    stop("在指定文件夹及其子文件夹中没有找到任何匹配的文件。请检查路径和新的文件名格式。")
   }
   
-  # Step 2: 使用 purrr::map_dfr 循环处理每个文件
+  # Step 2: 循环处理每个文件 (这部分逻辑完全不变)
   all_data_long <- purrr::map_dfr(all_files, ~ {
     
-    # `.` 代表当前正在处理的文件的完整路径
     current_file_path <- .
     
-    # --- 新增关键步骤：从文件路径中提取指标类型（即子文件夹名） ---
-    # dirname() 获取目录路径, basename() 获取最后一级名称
+    # 提取指标类型的逻辑不变，因为它依赖的是【文件夹名】，而不是文件名
     metric_type <- basename(dirname(current_file_path))
     
-    # 读取并处理单个文件 (逻辑和之前类似)
     processed_data <- readxl::read_xlsx(current_file_path) %>%
       dplyr::mutate(city_clean = stringr::str_trim(stringr::str_remove(city, "市"))) %>%
       dplyr::inner_join(city_map_df, by = c("city_clean" = "city_cn")) %>%
@@ -180,22 +182,115 @@ process_all_subfolder_data <- function(main_folder_path, city_map_df) {
         names_to = "year_month",
         values_to = "value"
       ) %>%
-      # 添加指标类型列
       dplyr::mutate(metric_type = metric_type) %>%
       dplyr::select(city = city_en, year_month, metric_type, value)
     
     return(processed_data)
   })
   
-  # Step 3: 对合并后的【所有】数据进行最终的分组和汇总
-  # 注意：group_by 中现在加入了 metric_type
+  # Step 3: 分组汇总 (这部分逻辑也完全不变)
   final_summary <- all_data_long %>%
     dplyr::group_by(city, year_month, metric_type) %>%
     dplyr::summarise(
       mean_value = mean(value, na.rm = TRUE),
       .groups = 'drop'
     )
+  final_summary <- final_summary %>%
+    tidyr::pivot_wider(
+      names_from = metric_type,  # 使用 metric_type 列的值作为新的列名
+      values_from = mean_value   # 使用 mean_value 列的值填充新列
+    )
+  cat("汇总表已从长格式转换为宽格式。\n")
+  output_path <- "~/NMDA/data/air_quality/month/guangdong_all_years_summary.xlsx"
   
+  # 2. 使用 write_xlsx() 函数进行保存
+  write_xlsx(final_summary, path = output_path)
   return(final_summary)
 }
 
+
+
+#' 为主数据框添加滞后的暴露数据（V3 - 接收宽格式数据）
+#'
+#' @param patient_data 主数据框，需要包含一个日期列和一个城市列。
+#' @param summary_data_wide 【宽格式】的污染物汇总数据框。此数据框应包含一个城市列，
+#'                          一个日期列，以及每个污染物作为单独列的数据。
+#' @param date_col_patient 病人数据中日期列的名称 (应为 "YYYY-MM" 格式的文本)。
+#' @param city_col_patient 病人数据中城市列的名称。
+#' @param date_col_summary 汇总数据中日期列的名称。
+#' @param city_col_summary 汇总数据中城市列的名称。
+#' @param lags_vector 需要提取的滞后月数向量，例如 0:3。
+#' @return 一个新的数据框，在主数据框的基础上，为每个污染物和每个滞后期都添加了新列。
+
+add_lagged_exposure <- function(patient_data, 
+                                summary_data_wide, 
+                                date_col_patient = "Date of onset",
+                                city_col_patient = "Residential address",
+                                date_col_summary = "year_month",
+                                city_col_summary = "city",
+                                lags_vector = 0:3) {
+  
+  # --- 准备工作 ---
+  
+  # 1. 准备病人表：创建真实的 Date 对象用于计算
+  patient_data_prepared <- patient_data %>%
+    dplyr::mutate(
+      onset_date_obj = lubridate::ymd(paste0(.data[[date_col_patient]], "-01"))
+    )
+  
+  # 2. 准备汇总表：确保日期列是 Date 对象 (以防万一)
+  summary_data_prepared <- summary_data_wide %>%
+    dplyr::mutate(
+      across(!!rlang::sym(date_col_summary), ~ lubridate::ymd(paste0(., "-01")))
+    )
+  
+  # --- 核心逻辑：循环匹配每个滞后期 ---
+  
+  list_of_lagged_dfs <- purrr::map(lags_vector, ~{
+    
+    current_lag <- .
+    
+    patient_data_with_key <- patient_data_prepared %>%
+      dplyr::mutate(
+        target_month_obj = onset_date_obj %m-% months(current_lag)
+      )
+    
+    # 创建连接键
+    join_keys <- setNames(
+      c(city_col_summary, date_col_summary), # 右表 (summary) 中的列名
+      c(city_col_patient, "target_month_obj")   # 左表 (patient) 中的列名
+    )
+    
+    # 直接与【宽格式】的汇总表进行连接
+    lagged_data <- dplyr::left_join(
+      patient_data_with_key,
+      summary_data_prepared,
+      by = join_keys
+    )
+    
+    # 获取所有污染物列的名称
+    id_cols <- c(city_col_summary, date_col_summary)
+    pollutant_cols <- setdiff(names(summary_data_prepared), id_cols)
+    
+    lagged_data_renamed <- lagged_data %>%
+      dplyr::rename_with(
+        .cols = dplyr::all_of(pollutant_cols),
+        .fn = ~ paste0(., "_M", current_lag)
+      ) %>%
+      dplyr::select(
+        dplyr::one_of(names(patient_data)), 
+        dplyr::starts_with(pollutant_cols)
+      )
+    
+    return(lagged_data_renamed)
+  })
+  
+  # --- 最后合并 ---
+  final_result <- purrr::reduce(
+    list_of_lagged_dfs,
+    dplyr::left_join,
+    by = names(patient_data)
+  )
+  
+  return(final_result)
+}
