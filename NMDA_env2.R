@@ -8,6 +8,7 @@ library(purrr)
 library(pscl)
 library(VGAM)
 library(scatterplot3d)
+library(knitr)
 setwd("/Users/shij/Documents/GitHub/NMDA_data_analysis/")
 
 ###############Data checking
@@ -60,4 +61,31 @@ persp(x, y, z, theta=45, phi=30, expand=0.75, col="#8491B4",xlab = "\nAQI",
       zlab = "\n\nIncidence Risk Ratio",ticktype = "detailed")
 dev.off()
 
+extract_vglm_coeffs <- function(fit, model_name) {
+  co <- as.data.frame(summary(fit)@coef3)
+  co$term <- rownames(co)
+  co$model <- model_name
+  rownames(co) <- NULL
+  co[, c("term", "Estimate", "Std. Error", "z value", "Pr(>|z|)")]
+}
+
+fits <- list(zerotrunc_model1 = zerotrunc_model1, zerotrunc_model2 = zerotrunc_model2, 
+             zerotrunc_model3 = zerotrunc_model3, zerotrunc_model4 = zerotrunc_model4)
+
+all_summary <- do.call(rbind, Map(extract_vglm_coeffs, fits, names(fits)))
+
+#Add significance stars
+all_summary$signif <- cut(
+  all_summary$`Pr(>|z|)`,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+  labels = c("***", "**", "*", ".", "")
+)
+
+print(all_summary)
+
+# Create your HTML table as a character string
+AQI_table<-kable(all_summary, digits = 4, align = "c", caption = "Summary of AQI Results", format = "html")
+
+# Write it to an HTML file
+cat(AQI_table, file = "AQI_summary.html")
 
