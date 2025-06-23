@@ -201,7 +201,7 @@ process_all_subfolder_data <- function(main_folder_path, city_map_df) {
       values_from = mean_value   # 使用 mean_value 列的值填充新列
     )
   cat("汇总表已从长格式转换为宽格式。\n")
-  output_path <- "~/NMDA/data/air_quality/month/guangdong_all_years_summary.xlsx"
+  output_path <- "~/NMDA/data/air_quality_new/month/guangdong_all_years_summary.xlsx"
   
   # 2. 使用 write_xlsx() 函数进行保存
   write_xlsx(final_summary, path = output_path)
@@ -294,3 +294,77 @@ add_lagged_exposure <- function(patient_data,
   
   return(final_result)
 }
+
+#' 对指定的污染物进行聚合、建模和结果汇总
+#'
+#' @param input_data 包含滞后暴露数据的原始数据框 (例如 my.dat)。
+#' @param pollutant_name 一个字符串，代表要分析的污染物的基础名称 (例如 "AQI", "CO", "O3_24h")。
+#' @param group_vars 一个字符向量，指定 count() 函数中除污染物外的分组变量。
+#'
+#' @return 一个列表，包含三项内容：
+#'         1. aggregated_data: count() 之后聚合好的数据。
+#'         2. models: 一个包含了四个 vglm 模型对象的列表。
+#'         3. summary_table: 一个包含了所有模型系数和统计量的汇总数据框。
+
+run_pollutant_analysis <- function(input_data, 
+                                   pollutant_name, 
+                                   group_vars = c("Residential address", "Date of onset1")) {
+  
+  # --- 步骤 1 和 2: 动态准备和聚合数据 (这部分不变) ---
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  if (!all(lag_cols %in% names(input_data))) {
+    stop(paste("输入数据中缺少以下部分或全部列:", paste(lag_cols, collapse=", ")))
+  }
+  
+  aggregated_data <- input_data %>%
+    count(across(all_of(c(group_vars, lag_cols))), name = "n")
+  
+  # --- 步骤 3: 循环建模 (这部分不变) ---
+  models_list <- purrr::map(lag_cols, ~{
+    model_formula <- as.formula(paste("n ~", .x))
+    vglm(model_formula, pospoisson, data = aggregated_data)
+  })
+  
+  names(models_list) <- lag_cols
+  
+  # --- !! 步骤 4: 修改结果提取方法 !! ---
+  
+  # 由于 broom::tidy 不支持 vglm 对象，我们改用手动提取系数矩阵的方法
+  # purrr::map_dfr 会循环每个模型，提取其汇总信息，并合并成一个整洁的数据框
+  summary_table <- purrr::map_dfr(
+    models_list,
+    # 对于列表中的每个模型(.x)，执行以下操作...
+    ~ {
+      # 1. 获取模型的 summary() 对象
+      model_summary <- summary(.x)
+      
+      # 2. vglm 模型的系数矩阵存储在 @coef3 这个位置
+      coef_matrix <- model_summary@coef3
+      
+      # 3. 将这个矩阵转换为数据框，并将行名（即变量名）变成一个新列
+      as.data.frame(coef_matrix) %>%
+        tibble::rownames_to_column(var = "term")
+    },
+    # .id 参数会创建一个新列，用来指明每一行结果来自于哪个模型
+    .id = "model"
+  )
+  
+  # --- 步骤 5: 返回所有有用的结果 (这部分不变) ---
+  return(
+    list(
+      aggregated_data = aggregated_data,
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}
+
+extract_vglm_coeffs <- function(fit, model_name) {
+  co <- as.data.frame(summary(fit)@coef3)
+  co$term <- rownames(co)
+  co$model <- model_name
+  rownames(co) <- NULL
+  co[, c("term", "Estimate", "Std. Error", "z value", "Pr(>|z|)")]
+}
+
