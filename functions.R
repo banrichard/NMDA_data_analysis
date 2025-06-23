@@ -1,3 +1,15 @@
+get_city_map <- function() {
+  
+  city_map_data <- data.frame(
+    stringsAsFactors = FALSE,
+    city_cn = c("广州", "深圳", "珠海", "汕头", "佛山", "韶关", "湛江", "肇庆", "江门", "茂名", "惠州", "梅州", "汕尾", "河源", "阳江", "清远", "东莞", "中山", "潮州", "揭阳", "云浮"),
+    city_en = c("Guangzhou", "Shenzhen", "Zhuhai", "Shantou", "Foshan", "Shaoguan", "Zhanjiang", "Zhaoqing", "Jiangmen", "Maoming", "Huizhou", "Meizhou", "Shanwei", "Heyuan", "Yangjiang", "Qingyuan", "Dongguan", "Zhongshan", "Chaozhou", "Jieyang", "Yunfu")
+  )
+  
+  return(city_map_data)
+}
+
+
 #' 清洗包含多种混合格式的日期向量
 #'
 #' @param date_vector 一个字符向量，可能包含 YYYY-MM-DD, YYYY-M, YYYY-MM, 和 Excel 数字格式的日期。
@@ -366,5 +378,132 @@ extract_vglm_coeffs <- function(fit, model_name) {
   co$model <- model_name
   rownames(co) <- NULL
   co[, c("term", "Estimate", "Std. Error", "z value", "Pr(>|z|)")]
+}
+
+
+#' 创建并补全用于回归分析的面板数据
+#'
+#' 为指定的单个污染物，生成一个包含所有城市、所有月份的完整面板数据。
+#' 没有病例的月份，病例数(n)记为0。
+#'
+#' @param pollutant_name 要分析的污染物的基础名称 (例如 "AQI")。
+#' @param case_data 包含病例信息的原始数据框 (例如 my.dat)。
+#' @param summary_wide_data 【宽格式】的污染物汇总数据，每个污染物一列。
+#' @param city_map 中英文城市名字典。
+#' @param start_date 研究开始日期，格式为 "YYYY-MM-DD"。
+#' @param end_date 研究结束日期，格式为 "YYYY-MM-DD"。
+#' @param case_city_col 病例数据中的城市列名。
+#' @param case_date_col 病例数据中的年月列名 ("YYYY-MM"格式)。
+#'
+#' @return 一个完整、规整的面板数据框，可用于后续建模。
+
+create_final_panel_data <- function(pollutant_name,
+                                    case_data, 
+                                    summary_wide_data,
+                                    city_map,
+                                    start_date = "2014-05-01", 
+                                    end_date = "2024-12-01") {
+  
+  # --- 1. 创建“所有城市 x 所有月份”的完整网格 ---
+  
+  cities_of_interest <- unique(case_data$`Residential address`)
+  full_month_sequence <- seq(as.Date(start_date), as.Date(end_date), by = "month")
+  full_month_grid <- format(full_month_sequence, "%Y-%m")
+  
+  complete_grid <- tidyr::expand_grid(
+    `Residential address` = cities_of_interest,
+    `Date of onset1` = full_month_grid
+  )
+  
+  # --- 2. 为完整网格的每一行匹配上【所有】污染物的滞后暴露数据 ---
+  # 我们直接调用之前写的 add_lagged_exposure 函数！
+  # 这会为我们生成一个包含所有污染物 M0-M3 暴露水平的“主数据面板”
+  master_exposure_panel <- add_lagged_exposure(
+    patient_data = complete_grid,
+    summary_data_wide = summary_wide_data,
+    date_col_patient = "Date of onset1",
+    city_col_patient = "Residential address",
+    lags_vector = 0:3
+  )
+  
+  # --- 3. 计算每个城市每月的实际病例数 ---
+  
+  case_counts <- case_data %>%
+    dplyr::count(
+      `Residential address`, 
+      `Date of onset1`, 
+      name = "n"
+    )
+  
+  # --- 4. 将病例数合并到主数据面板，并补零 ---
+  
+  lag_cols_to_select <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 2. 在最后合并与筛选的步骤中，使用 all_of() 进行精确选择
+  final_panel <- master_exposure_panel %>%
+    dplyr::left_join(
+      case_counts, 
+      by = c("Residential address", "Date of onset1")
+    ) %>%
+    dplyr::mutate(n = tidyr::replace_na(n, 0)) %>%
+    # 之前这里错误地使用了 starts_with()
+    # 现在修正为 all_of()，它只会匹配 lag_cols_to_select 中【一模一样】的列名
+    dplyr::select(
+      `Residential address`,
+      `Date of onset1`,
+      n,
+      dplyr::all_of(lag_cols_to_select)
+    )
+  
+  
+  return(final_panel)
+}
+
+
+#' 使用 glm() 对指定的污染物面板数据进行建模分析
+#'
+#' @param panel_data 一个补全了零值的、规整的面板数据框。
+#' @param pollutant_name 要分析的污染物的基础名称 (例如 "AQI")。
+#'
+#' @return 一个列表，包含：
+#'         1. models: 包含了四个 glm 模型对象的列表。
+#'         2. summary_table: 一个包含了所有模型系数和统计量的汇总数据框。
+
+run_glm_analysis <- function(panel_data, pollutant_name) {
+  
+  # 1. 动态生成四个滞后列的名称
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 检查面板数据中是否存在这些列
+  if (!all(lag_cols %in% names(panel_data))) {
+    stop(paste("输入数据中缺少以下部分或全部列:", paste(lag_cols, collapse=", ")))
+  }
+  
+  # 2. 循环建模
+  # 使用 purrr::map 来为每个滞后列运行一次 glm 模型
+  models_list <- purrr::map(lag_cols, ~{
+    # .x 代表当前的滞后列名 (例如 "AQI_M0")
+    
+    # 动态创建公式
+    model_formula <- as.formula(paste("n ~", .x))
+    
+    # 【关键变化】使用 glm() 和标准的 poisson family
+    glm(model_formula, family = poisson(link = "log"), data = panel_data)
+  })
+  
+  # 为模型列表命名
+  names(models_list) <- lag_cols
+  
+  # 3. 【关键变化】使用 broom::tidy 提取结果
+  # broom 可以完美处理 glm 模型的输出
+  summary_table <- purrr::map_dfr(models_list, broom::tidy, .id = "model")
+  
+  # 4. 返回结果
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
 }
 
