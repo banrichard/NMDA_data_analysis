@@ -13,6 +13,10 @@ setwd("/Users/banlujie/NMDA")
 NMDA1<-read_xlsx("/Users/banlujie/NMDA/data/air_quality/NMDA_1.xlsx")
 NMDA1 <- NMDA1 %>%
   mutate(`Date of onset` = clean_mixed_dates(`Date of onset`))
+NMDA1 <- NMDA1 %>%
+  mutate(`Date of birth` = clean_mixed_dates(`Date of birth`))
+NMDA1 <- NMDA1 %>%
+  mutate(`Date of admission` =clean_mixed_dates(`Date of admission`))
 summary(NMDA1)
 
 ##Data cleaning
@@ -29,12 +33,11 @@ summary(NMDA1)
   NMDA1[NMDA1$`Residential address`=="jieyang",]$`Residential address`="Jieyang"
 
 }
-NMDA1$`Date of onset` <- format(NMDA1$`Date of onset`, "%Y-%m")
+NMDA1$`Date of onset1` <- format(NMDA1$`Date of onset`, "%Y-%m")
+
 city_map <- data.frame(
-  # stringsAsFactors = FALSE 是一个好习惯，防止文本被当成因子处理
   stringsAsFactors = FALSE,
   
-  # 中文列 (需要和您数据中的名称完全对应)
   city_cn = c(
     "广州", "深圳", "珠海", "汕头", "佛山", "韶关", "湛江", "肇庆", 
     "江门", "茂名", "惠州", "梅州", "汕尾", "河源", "阳江", "清远", 
@@ -52,7 +55,7 @@ city_map <- data.frame(
 city_recode_vector <- setNames(city_map$city_en, city_map$city_cn)
 
 
-main_folder <- "~/NMDA/data/air_quality/month"
+main_folder <- "~/NMDA/data/air_quality_new/month"
 
 # 4. 一行代码，处理所有子文件夹中的所有文件！
 all_metrics_summary <- process_all_subfolder_data(
@@ -65,14 +68,14 @@ final_patient_data <- add_lagged_exposure(
   summary_data_wide = all_metrics_summary, # <-- 传入的是宽格式数据
   
   # 下面的参数通常不需要改，除非您的列名不同
-  date_col_patient = "Date of onset",
+  date_col_patient = "Date of onset1",
   city_col_patient = "Residential address",
   date_col_summary = "year_month",
   city_col_summary = "city",
   
   lags_vector = 0:3
 )
-patient_output_path <- "/Users/banlujie/NMDA/data/air_quality/NMDA1_with_pollution.xlsx"
+patient_output_path <- "/Users/banlujie/NMDA/data/air_quality_new/NMDA1_with_pollution.xlsx"
 
 
 write_xlsx(final_patient_data, path = patient_output_path)

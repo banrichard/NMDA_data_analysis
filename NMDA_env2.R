@@ -9,7 +9,8 @@ library(pscl)
 library(VGAM)
 library(scatterplot3d)
 library(knitr)
-setwd("/Users/shij/Documents/GitHub/NMDA_data_analysis/")
+source("functions.R")
+setwd("~/NMDA/")
 
 ###############Data checking
 
@@ -51,13 +52,32 @@ estbeta[2,]=coef(zerotrunc_model2)
 estbeta[3,]=coef(zerotrunc_model3)
 estbeta[4,]=coef(zerotrunc_model4)
 
+aqi_results <- run_pollutant_analysis(
+  input_data = my.dat, 
+  pollutant_name = "AQI"
+)
+estbeta <- aqi_results$summary_table %>%
+  
+  # 这一步不变
+  mutate(term_type = if_else(term == "(Intercept)", "Intercept", "Slope")) %>%
+  
+  select(model, term_type, Estimate) %>%
+  tidyr::pivot_wider(names_from = term_type, values_from = Estimate) %>%
+  # --- 修改结束 ---
+  
+  # 后续步骤不变
+  # arrange(model) %>% # 可选的排序
+  select(Intercept, Slope) %>%
+  as.matrix()
+
+#### Drawing
 y=c(0:3)
 x <- seq(15, 90, length=50)
 z<- outer(x, y, function(x, y) exp(estbeta[(y+1),1]+x*estbeta[(y+1),2]))
 
 jpeg("AQI_month.jpeg", width = 560, height = 500)
 persp(x, y, z, theta=45, phi=30, expand=0.75, col="#8491B4",xlab = "\nAQI",
-      ylab = "\nLag",
+      ylab = "\nLag (Month)",
       zlab = "\n\nIncidence Risk Ratio",ticktype = "detailed")
 dev.off()
 
@@ -69,8 +89,10 @@ extract_vglm_coeffs <- function(fit, model_name) {
   co[, c("term", "Estimate", "Std. Error", "z value", "Pr(>|z|)")]
 }
 
-fits <- list(zerotrunc_model1 = zerotrunc_model1, zerotrunc_model2 = zerotrunc_model2, 
-             zerotrunc_model3 = zerotrunc_model3, zerotrunc_model4 = zerotrunc_model4)
+# fits <- list(zerotrunc_model1 = zerotrunc_model1, zerotrunc_model2 = zerotrunc_model2, 
+#              zerotrunc_model3 = zerotrunc_model3, zerotrunc_model4 = zerotrunc_model4)
+
+fits <- aqi_results$models
 
 all_summary <- do.call(rbind, Map(extract_vglm_coeffs, fits, names(fits)))
 

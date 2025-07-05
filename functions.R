@@ -507,3 +507,34 @@ run_glm_analysis <- function(panel_data, pollutant_name) {
   )
 }
 
+
+#' 对指定的两个污染物及其交互作用进行 GLM 建模分析
+#'
+#' @param panel_data 补全了零值的规整面板数据。
+#' @param pollutant1 第一个污染物的名称。
+#' @param pollutant2 第二个污染物的名称。
+#' @param lag_period 滞后月数 (一个数字，例如 0, 1, 2, 或 3)。
+#'
+#' @return 一个由 broom::tidy 整理好的模型结果数据框。
+
+run_two_pollutant_glm <- function(panel_data, pollutant1, pollutant2, lag_period) {
+  
+  # 1. 动态生成两个污染物在指定滞后期的列名
+  lag_col1 <- paste0(pollutant1, "_M", lag_period)
+  lag_col2 <- paste0(pollutant2, "_M", lag_period)
+  
+  # 检查数据中是否存在这些列
+  if (!all(c(lag_col1, lag_col2) %in% names(panel_data))) {
+    stop(paste("数据中缺少", lag_col1, "或", lag_col2))
+  }
+  
+  # 2. 动态创建包含交互项的公式
+  #    n ~ A * B 在 R 的公式中等价于 n ~ A + B + A:B
+  model_formula <- as.formula(paste("n ~", lag_col1, "*", lag_col2))
+  
+  # 3. 运行 GLM 模型
+  model_fit <- glm(model_formula, family = poisson(link = "log"), data = panel_data)
+  
+  # 4. 使用 broom::tidy 整理并返回结果
+  return(broom::tidy(model_fit))
+}
