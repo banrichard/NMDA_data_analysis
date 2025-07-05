@@ -94,7 +94,7 @@ for (pollutant in pollutants_to_analyze) {
   analysis_table<-kable(all_summary, digits = 4, align = "c", caption = paste0("Summary of ",pollutant," Results"), format = "html")
   
   # Write it to an HTML file
-  cat(analysis_table, file = paste0(pollutant,"_summary.html"))
+  cat(analysis_table, file = paste0("./report_result/",pollutant,"_summary.html"))
 }
 
 cat("\n--- 所有处理完成！ ---\n")

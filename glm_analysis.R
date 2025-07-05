@@ -130,11 +130,11 @@ for (pollutant in pollutants_to_analyze) {
     
     # f. 转换为绘图代码所需的【矩阵】格式
     as.matrix()
-  
+  print(estbeta_from_glm)
   y <- 0:3
 
   x <- seq(min(my.dat[, paste0(pollutant, "_M0")], na.rm=T), max(my.dat[, paste0(pollutant, "_M0")], na.rm=T), length.out = 50) 
-  z <- outer(x, y, function(x, y) exp(estbeta[(y + 1), 1] + x * estbeta[(y + 1), 2]))
+  z <- outer(x, y, function(x, y) exp(estbeta_from_glm[(y + 1), 1] + x * estbeta_from_glm[(y + 1), 2]))
   
   output_filename <- paste0("./result_figure_glm/",pollutant, "_month.jpeg")
   x_label <- paste("\n", pollutant)
@@ -156,7 +156,7 @@ for (pollutant in pollutants_to_analyze) {
   
   # Write it to an HTML file
   print(glm_summary)
-  cat(analysis_table, file = paste0("./report_result/",pollutant,"_summary.html"))  
+  cat(analysis_table, file = paste0("./report_result_glm/",pollutant,"_summary.html"))  
 }
 
 ##### effect between two pollutants

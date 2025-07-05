@@ -538,3 +538,245 @@ run_two_pollutant_glm <- function(panel_data, pollutant1, pollutant2, lag_period
   # 4. 使用 broom::tidy 整理并返回结果
   return(broom::tidy(model_fit))
 }
+
+
+#' 创建按性别分层并补全的面板数据
+#'
+#' @param ... (参数和之前的 create_final_panel_data 基本一样)
+#' @param gender_col 病例数据中性别列的名称。
+#' @return 一个按性别分层、补全了零值的完整面板数据框。
+
+create_gender_stratified_panel <- function(pollutant_name,
+                                           case_data, 
+                                           summary_wide_data,
+                                           city_map,
+                                           start_date = "2014-08-01", 
+                                           end_date = "2024-12-01",
+                                           case_city_col = "Residential address",
+                                           case_date_col = "Date of onset1",
+                                           gender_col = "gender") { # <-- 新增参数
+  
+  # --- 1. 创建“所有城市 x 所有月份 x 所有性别”的完整网格 ---
+  cities_of_interest <- city_map$city_en
+  full_month_sequence <- seq(as.Date(start_date), as.Date(end_date), by = "month")
+  full_month_grid <- format(full_month_sequence, "%Y-%m")
+  
+  # 获取数据中所有的性别类别 (例如 c("Male", "Female"))
+  gender_levels <- unique(case_data[[gender_col]])
+  
+  complete_grid <- tidyr::expand_grid(
+    !!case_city_col := cities_of_interest,
+    !!case_date_col := full_month_grid,
+    !!gender_col := gender_levels # <-- 网格中加入了性别
+  )
+  
+  # --- 2. 为完整网格匹配滞后暴露数据 ---
+  master_exposure_panel <- add_lagged_exposure(
+    patient_data = complete_grid,
+    summary_data_wide = summary_wide_data,
+    date_col_patient = case_date_col,
+    city_col_patient = case_city_col,
+    lags_vector = 0:3
+  )
+  
+  # --- 3. 按【城市、月份、性别】聚合实际病例数 ---
+  case_counts <- case_data %>%
+    dplyr::count(
+      .data[[case_city_col]], 
+      .data[[case_date_col]], 
+      .data[[gender_col]], # <-- count 时加入了性别
+      name = "n"
+    )
+  
+  # --- 4. 合并数据并补零 ---
+  final_panel <- master_exposure_panel %>%
+    dplyr::left_join(
+      case_counts, 
+      by = c(case_city_col, case_date_col, gender_col) # <-- 用三个键进行合并
+    ) %>%
+    dplyr::mutate(n = tidyr::replace_na(n, 0)) %>%
+    dplyr::select(
+      !!case_city_col, !!case_date_col, !!gender_col, n,
+      dplyr::starts_with(pollutant_name)
+    )
+  
+  return(final_panel)
+}
+
+#' 运行包含一个交互项的 GLM 模型
+#'
+#' @param panel_data 按性别分层的面板数据。
+#' @param pollutant_name 要分析的污染物名称。
+#' @param interaction_var 要检验的交互变量的名称 (这里是 "gender")。
+#'
+#' @return 一个包含所有滞后期模型结果的汇总数据框。
+
+run_interaction_glm <- function(panel_data, pollutant_name, interaction_var = "gender") {
+  
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  models_summary <- purrr::map_dfr(lag_cols, ~{
+    
+    lag_col <- .x
+    
+    # 创建包含交互项的公式，例如 n ~ AQI_M0 * gender
+    model_formula <- as.formula(paste("n ~", lag_col, "*", interaction_var))
+    
+    model_fit <- glm(model_formula, family = poisson(link = "log"), data = panel_data)
+    
+    # 使用 broom::tidy 整理结果，并添加模型名称信息
+    broom::tidy(model_fit) %>%
+      dplyr::mutate(model_name = lag_col, .before = 1)
+    
+  }, .id = "lag_period") # .id 在这里没太大用，但保留也无妨
+  
+  return(models_summary)
+}
+
+
+tidy_polr <- function(model, model_name) {
+  # Get coefficients and SE
+  coef_table <- coef(summary(model))
+  # Compute p-values
+  p_values <- 2 * pt(abs(coef_table[, "t value"]), df = Inf, lower.tail = FALSE)
+  # Create data frame
+  res <- data.frame(
+    term = rownames(coef_table),
+    estimate = coef_table[, "Value"],
+    std.error = coef_table[, "Std. Error"],
+    statistic = coef_table[, "t value"],
+    p.value = p_values,
+    model = model_name
+  )
+  res
+}
+
+#' 从数据框中自动提取唯一的污染物基础名称列表
+#'
+#' 该函数会查找指定的标记列，并提取其后所有列的名称，
+#' 然后移除 "_M#" 后缀，最终返回一个不重复的污染物名称向量。
+#'
+#' @param data 您的输入数据框 (例如 my.dat)。
+#' @param marker_column 一个字符串，作为查找起点的“标记列”的名称。
+#'
+#' @return 一个包含了所有唯一污染物基础名称的字符向量。
+
+get_pollutant_list <- function(data, marker_column = "Date of onset1") {
+  
+  # 确保 stringr 包已加载，以便使用 str_remove
+  if (!requireNamespace("stringr", quietly = TRUE)) {
+    stop("请先安装和加载 'stringr' 包: install.packages('stringr')")
+  }
+  
+  # 1. 找到“标记列”的位置（索引）
+  start_col_index <- which(names(data) == marker_column)
+  
+  # 2. 增加错误处理，以防找不到标记列
+  if (length(start_col_index) == 0) {
+    stop(paste("错误：在数据框中找不到指定的标记列 '", marker_column, "'"))
+  }
+  
+  # 3. 增加一个警告，以防标记列是最后一列
+  if (start_col_index == ncol(data)) {
+    warning(paste("警告：标记列 '", marker_column, "' 是最后一列，其后没有发现污染物列。"))
+    return(character(0)) # 返回一个空向量
+  }
+  
+  # 4. 获取标记列之后的所有列名
+  all_pollutant_lag_cols <- names(data)[(start_col_index + 1):ncol(data)]
+  
+  # 5. 移除 "_M#" 后缀，得到污染物的基础名称
+  pollutant_base_names <- stringr::str_remove(all_pollutant_lag_cols, "_M\\d$")
+  
+  # 6. 获取不重复的污染物列表
+  unique_pollutants <- unique(pollutant_base_names)
+  
+  # 7. 返回最终结果
+  return(unique_pollutants)
+}
+
+
+好的，这个需求非常清晰。您希望将一套包含7个不同滞后组合的**有序逻辑斯蒂回归（polr）**分析流程，封装成一个可以对任何污染物重复使用的函数。
+
+这同样是一个非常适合函数封装的场景。我们将创建一个名为 run_ordinal_models() 的新函数，它将自动完成以下所有工作：
+
+根据您指定的污染物名称（如 "AQI"），动态生成7个不同的模型公式。
+
+循环运行这7个 polr 模型。
+
+对每个模型运行 Anova() 检验。
+
+将所有模型对象、系数/p值、以及Anova检验结果，都整洁地打包到一个列表里返回。
+
+第一步：准备工作（安装和加载包）
+这次的分析需要用到 MASS 包（提供 polr 函数）和 car 包（提供 Anova 函数）。
+
+R
+
+# 在您的主分析脚本顶部确保已安装和加载
+# install.packages("MASS")
+# install.packages("car")
+# install.packages("broom") # 我们仍然用它来整理结果
+
+library(MASS)
+library(car)
+library(broom)
+library(dplyr)
+library(purrr)
+第二步：创建新的“有序逻辑斯蒂回归”分析函数
+这个函数是本次任务的核心。它将您手动操作的7个步骤完全自动化。
+
+请将这个新函数添加到您的 functions.R 文件中：
+
+R
+
+# In functions.R
+
+#' 对指定的污染物，运行一套包含7个模型的有序逻辑斯蒂回归分析
+#'
+#' @param data 用于建模的数据框 (例如 reg.dat.severity)。
+#' @param pollutant_name 一个字符串，代表要分析的污染物的基础名称 (例如 "AQI")。
+#' @param outcome_var 一个字符串，代表因变量的名称 (默认为 "mRS")。
+#'
+#' @return 一个列表，包含：
+#'         1. models: 一个包含了7个 polr 模型对象的命名列表。
+#'         2. coefficients: 一个包含了所有模型系数和统计量的汇总数据框。
+#'         3. anovas: 一个包含了所有模型Anova检验结果的汇总数据框。
+
+run_ordinal_models <- function(data, pollutant_name, outcome_var = "mRS") {
+  
+  # ... (函数的前半部分，直到 models_list 的创建，都保持不变) ...
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  model_formulas_rhs <- list(
+    Model1 = lag_cols[1], Model2 = lag_cols[2], Model3 = lag_cols[3], Model4 = lag_cols[4],
+    Model5 = paste(lag_cols[1:2], collapse = " + "),
+    Model6 = paste(lag_cols[1:3], collapse = " + "),
+    Model7 = paste(lag_cols[1:4], collapse = " + ")
+  )
+  models_list <- purrr::map(model_formulas_rhs, ~{
+    full_formula <- as.formula(paste(outcome_var, "~", .x))
+    MASS::polr(full_formula, data = data, Hess = TRUE)
+  })
+  
+  # --- !! 修改点: 使用您自定义的 tidy_polr 函数来提取系数 !! ---
+
+  coeffs_summary <- purrr::imap_dfr(
+    models_list, 
+    # 对于每个模型(.x)和它的名字(.y)，都调用 tidy_polr
+    ~ tidy_polr(model = .x, model_name = .y)
+  )
+  
+  # --- 修改结束 ---
+  
+  # Anova 部分保持不变，因为 broom::tidy 能很好地处理 Anova 结果
+  anova_summary <- purrr::map_dfr(models_list, ~ broom::tidy(car::Anova(.)), .id = "model_name")
+  
+  return(
+    list(
+      models = models_list,
+      coefficients = coeffs_summary, # <-- 这里现在是您自定义函数的结果
+      anovas = anova_summary
+    )
+  )
+}
+
