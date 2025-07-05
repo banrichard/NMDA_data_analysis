@@ -634,6 +634,41 @@ run_interaction_glm <- function(panel_data, pollutant_name, interaction_var = "g
 }
 
 
+#' 运行一个简单的单污染物 GLM 模型
+#' @param panel_data 经过筛选的、只包含单一性别的数据面板。
+#' @param pollutant_name 要分析的污染物名称。
+#' @return 一个包含了所有滞后期模型结果的汇总数据框。
+
+run_simple_glm <- function(panel_data, pollutant_name) {
+  
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 【关键变化】我们现在使用 purrr::map 来循环，并手动构建每一行结果
+  # 这样可以完全控制输出的列内容
+  models_summary_list <- purrr::map(lag_cols, ~{
+    
+    current_lag_col <- .x # 当前的滞后列名，例如 "AQI_M0"
+    
+    model_formula <- as.formula(paste("n ~", current_lag_col))
+    model_fit <- glm(model_formula, family = poisson(link = "log"), data = panel_data)
+    
+    # 使用 broom::tidy 整理模型结果
+    tidy_result <- broom::tidy(model_fit)
+    
+    # 我们只关心污染物本身的那一行结果
+    pollutant_effect_row <- tidy_result %>%
+      dplyr::filter(term == current_lag_col)
+    
+    return(pollutant_effect_row)
+  })
+  
+  # 使用 dplyr::bind_rows 将列表中的所有数据框合并起来
+  final_summary <- dplyr::bind_rows(models_summary_list)
+  
+  return(final_summary)
+}
+
+
 tidy_polr <- function(model, model_name) {
   # Get coefficients and SE
   coef_table <- coef(summary(model))
@@ -696,41 +731,6 @@ get_pollutant_list <- function(data, marker_column = "Date of onset1") {
 }
 
 
-好的，这个需求非常清晰。您希望将一套包含7个不同滞后组合的**有序逻辑斯蒂回归（polr）**分析流程，封装成一个可以对任何污染物重复使用的函数。
-
-这同样是一个非常适合函数封装的场景。我们将创建一个名为 run_ordinal_models() 的新函数，它将自动完成以下所有工作：
-
-根据您指定的污染物名称（如 "AQI"），动态生成7个不同的模型公式。
-
-循环运行这7个 polr 模型。
-
-对每个模型运行 Anova() 检验。
-
-将所有模型对象、系数/p值、以及Anova检验结果，都整洁地打包到一个列表里返回。
-
-第一步：准备工作（安装和加载包）
-这次的分析需要用到 MASS 包（提供 polr 函数）和 car 包（提供 Anova 函数）。
-
-R
-
-# 在您的主分析脚本顶部确保已安装和加载
-# install.packages("MASS")
-# install.packages("car")
-# install.packages("broom") # 我们仍然用它来整理结果
-
-library(MASS)
-library(car)
-library(broom)
-library(dplyr)
-library(purrr)
-第二步：创建新的“有序逻辑斯蒂回归”分析函数
-这个函数是本次任务的核心。它将您手动操作的7个步骤完全自动化。
-
-请将这个新函数添加到您的 functions.R 文件中：
-
-R
-
-# In functions.R
 
 #' 对指定的污染物，运行一套包含7个模型的有序逻辑斯蒂回归分析
 #'

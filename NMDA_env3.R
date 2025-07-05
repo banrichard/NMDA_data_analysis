@@ -17,7 +17,7 @@ library(gridExtra)
 library(grid)
 library(magick)
 library(kableExtra)
-setwd("/Users/shij/Documents/GitHub/NMDA_data_analysis/")
+setwd("~/NMDA/")
 
 ###############Data checking
 
