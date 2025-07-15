@@ -14,6 +14,32 @@ source("functions.R")
 setwd("~/NMDA/")
 main_folder <- "~/NMDA/data/air_quality_new/month"
 my.dat<-read_xlsx("./data/air_quality_new/NMDA1_with_pollution.xlsx")
+population <- read_xlsx("./data/guangdong_population.xlsx")
+population_long <- population %>%
+  
+  # a. 筛选掉第一行“广东省”的汇总数据
+  filter(City != "Guangdong") %>%
+  
+  # b. 【核心】使用 pivot_longer 将年份列从宽转为长
+  pivot_longer(
+    # 选中所有从 "2014" 到 "2024" 的列
+    cols = `2014`:`2024`,
+    # 新的、存放年份的列，我们命名为 "year"
+    names_to = "year",
+    # 新的、存放人口数的列，我们命名为 "population"
+    values_to = "population"
+  ) %>%
+  
+  # c. 将 year 列从文本转换为数值，便于后续匹配
+  mutate(year = as.integer(year))
+
+my_dat_with_year <- my.dat %>%
+  mutate(
+    # 从 "YYYY-MM" 格式的文本中，提取前4个字符并转为数值
+    year = as.integer(substr(`Date of onset1`, 1, 4))
+  )%>%
+  relocate(year, .before = `Date of onset1`)
+
 na_counts <- colSums(is.na(my.dat))
 na_summary <- data.frame(
   column = names(na_counts),

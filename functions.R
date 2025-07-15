@@ -485,7 +485,7 @@ run_glm_analysis <- function(panel_data, pollutant_name) {
     # .x 代表当前的滞后列名 (例如 "AQI_M0")
     
     # 动态创建公式
-    model_formula <- as.formula(paste("n ~", .x))
+    model_formula <- as.formula(paste("n ~", .x ))
     
     # 【关键变化】使用 glm() 和标准的 poisson family
     glm(model_formula, family = poisson(link = "log"), data = panel_data)
@@ -780,3 +780,218 @@ run_ordinal_models <- function(data, pollutant_name, outcome_var = "mRS") {
   )
 }
 
+
+#' 创建按指定变量分层并补全的面板数据 (通用版)
+#' @param strata_col 用于分层的列的名称 (例如 "gender_factor" 或 "age_group")
+#' (其他参数和之前一样)
+
+create_stratified_panel <- function(pollutant_name,
+                                    case_data, 
+                                    summary_wide_data,
+                                    city_map,
+                                    start_date = "2014-12-01", 
+                                    end_date = "2024-12-01",
+                                    case_city_col = "Residential address",
+                                    case_date_col = "Date of onset1",
+                                    strata_col) { # <-- 参数变得更通用
+  
+  cities_of_interest <- city_map$city_en
+  full_month_sequence <- seq(as.Date(start_date), as.Date(end_date), by = "month")
+  full_month_grid <- format(full_month_sequence, "%Y-%m")
+  
+  # 获取分层变量的所有水平
+  strata_levels <- unique(case_data[[strata_col]])
+  
+  # 创建“所有城市 x 所有月份 x 所有分层水平”的完整网格
+  complete_grid <- tidyr::expand_grid(
+    !!case_city_col := cities_of_interest,
+    !!case_date_col := full_month_grid,
+    !!strata_col := strata_levels
+  )
+  
+  # 为完整网格匹配滞后暴露数据
+  master_exposure_panel <- add_lagged_exposure(
+    patient_data = complete_grid,
+    summary_data_wide = summary_wide_data,
+    date_col_patient = case_date_col,
+    city_col_patient = case_city_col,
+    lags_vector = 0:3
+  )
+  
+  # 按【城市、月份、分层变量】聚合实际病例数
+  case_counts <- case_data %>%
+    dplyr::count(
+      .data[[case_city_col]], 
+      .data[[case_date_col]], 
+      .data[[strata_col]], # <-- 使用通用的分层变量
+      name = "n"
+    )
+  
+  # 合并数据并补零
+  final_panel <- master_exposure_panel %>%
+    dplyr::left_join(case_counts, by = c(case_city_col, case_date_col, strata_col)) %>%
+    dplyr::mutate(n = tidyr::replace_na(n, 0)) %>%
+    dplyr::select(
+      !!case_city_col, !!case_date_col, !!strata_col, n,
+      dplyr::starts_with(pollutant_name)
+    )
+  
+  return(final_panel)
+}
+
+
+#' 使用 glm() 对指定的污染物面板数据进行建模分析（包含 offset）
+#'
+#' @param panel_data 一个【已补全零值】且【包含人口列】的规整面板数据框。
+#' @param pollutant_name 要分析的污染物的基础名称 (例如 "AQI")。
+#' @param pop_col 人口数据列的名称（字符串）。默认为 "population"。
+#'
+#' @return 一个列表，包含：
+#'         1. models: 包含了四个 glm 模型对象的列表。
+#'         2. summary_table: 一个包含了所有模型系数和统计量的汇总数据框。
+
+run_glm_analysis_with_offset <- function(panel_data, pollutant_name, pop_col = "population") {
+  
+  # 1. 动态生成四个滞后列的名称
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 检查面板数据中是否存在这些列
+  if (!all(lag_cols %in% names(panel_data))) {
+    stop(paste("输入数据中缺少以下部分或全部列:", paste(lag_cols, collapse=", ")))
+  }
+  # 检查人口列是否存在
+  if (!pop_col %in% names(panel_data)) {
+    stop(paste("输入数据中缺少人口列:", pop_col))
+  }
+  
+  # 2. 循环建模
+  models_list <- purrr::map(lag_cols, ~{
+    
+    # 【关键修改】在公式中加入 offset 项
+    model_formula <- as.formula(paste("n ~", .x, "+ offset(log(", pop_col, "))"))
+    
+    # 运行 glm 模型
+    glm(model_formula, family = poisson(link = "log"), data = panel_data)
+  })
+  
+  # 为模型列表命名
+  names(models_list) <- lag_cols
+  
+  # 3. 使用 broom::tidy 提取结果
+  summary_table <- purrr::map_dfr(models_list, broom::tidy, .id = "model")
+  
+  # 4. 返回结果
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}
+# In functions.R
+
+#' 创建按指定变量分层并补全的面板数据（V2 - 包含人口数据）
+#' @param population_long_data 【长格式】的人口数据框，应包含 city_en, year, population 三列。
+#' (其他参数不变)
+
+create_stratified_panel_v2 <- function(pollutant_name,
+                                       case_data, 
+                                       summary_wide_data,
+                                       city_map,
+                                       population_long_data, # <-- 新增参数
+                                       start_date = "2014-12-01", 
+                                       end_date = "2024-12-01",
+                                       case_city_col = "Residential address",
+                                       case_date_col = "Date of onset1",
+                                       strata_col) {
+  
+  cities_of_interest <- city_map$city_en
+  full_month_sequence <- seq(as.Date(start_date), as.Date(end_date), by = "month")
+  full_month_grid <- format(full_month_sequence, "%Y-%m")
+  strata_levels <- unique(case_data[[strata_col]])
+  
+  # --- !! 修改点 1: 创建基础网格 !! ---
+  # 我们先创建无名的数据框，再用 setNames() 命名，以替代 := 语法
+  complete_grid_unnamed <- tidyr::expand_grid(
+    cities_of_interest,
+    full_month_grid,
+    strata_levels
+  )
+  complete_grid <- setNames(complete_grid_unnamed, c(case_city_col, case_date_col, strata_col))
+  
+  # 为网格添加年份列并连接人口数据
+  # --- !! 修改点 2: 创建连接键 !! ---
+  join_keys_pop <- setNames("City", case_city_col) # 生成 c("Residential address" = "city_en")
+  
+  complete_grid_with_pop <- complete_grid %>%
+    mutate(year = as.integer(substr(.data[[case_date_col]], 1, 4))) %>%
+    left_join(population_long_data, by = c(join_keys_pop, "year" = "year"))
+  
+  # --- 后续逻辑不变 ---
+  
+  master_exposure_panel <- add_lagged_exposure(
+    patient_data = complete_grid_with_pop,
+    summary_data_wide = summary_wide_data,
+    date_col_patient = case_date_col,
+    city_col_patient = case_city_col,
+    lags_vector = 0:3
+  )
+  
+  case_counts <- case_data %>%
+    dplyr::count(.data[[case_city_col]], .data[[case_date_col]], .data[[strata_col]], name = "n")
+  
+  final_panel <- master_exposure_panel %>%
+    dplyr::left_join(case_counts, by = c(case_city_col, case_date_col, strata_col)) %>%
+    dplyr::mutate(n = tidyr::replace_na(n, 0)) %>%
+    dplyr::select(
+      !!rlang::sym(case_city_col), !!rlang::sym(case_date_col), !!rlang::sym(strata_col), population, n,
+      dplyr::starts_with(pollutant_name)
+    )
+  
+  return(final_panel)
+}
+
+
+#' 使用 vglm() 运行零截断泊松回归模型
+#'
+#' @param reg_data 一个聚合后的数据框，其中 n >= 1。
+#' @param pollutant_name 要分析的污染物的基础名称。
+#' @return 一个包含了所有模型系数和统计量的汇总数据框。
+
+run_vglm_analysis <- function(reg_data, pollutant_name) {
+  
+  # 1. 动态生成四个滞后列的名称
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 2. 循环建模
+  models_list <- purrr::map(lag_cols, ~{
+    # 动态创建公式
+    model_formula <- as.formula(paste("n ~", .x))
+    # 【关键】使用 vglm 和 pospoisson
+    VGAM::vglm(model_formula, family = VGAM::pospoisson(), data = reg_data)
+  })
+  
+  # 为模型列表命名
+  names(models_list) <- lag_cols
+  
+  # 3. 手动提取结果
+  # 我们之前已经解决了这个问题，现在直接使用
+  summary_table <- purrr::map_dfr(
+    models_list,
+    ~ {
+      # vglm 模型的系数矩阵存储在 @coef3 这个位置
+      coef_matrix <- summary(.x)@coef3
+      # 转换为数据框，并将行名（变量名）变成一个新列
+      as.data.frame(coef_matrix) %>%
+        tibble::rownames_to_column(var = "term")
+    },
+    .id = "model"
+  )
+  
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}

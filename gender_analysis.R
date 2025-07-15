@@ -69,8 +69,18 @@ for (pollutant in pollutants_to_analyze) {
     interaction_var = "gender_factor"
   )
   
-  male_results <- run_simple_glm(filter(panel_data, gender_factor == "Male"), pollutant) %>% mutate(gender = "Male", .before = 1)
-  female_results <- run_simple_glm(filter(panel_data, gender_factor == "Female"), pollutant) %>% mutate(gender = "Female", .before = 1)
+  # 为男性运行【新版】模型函数
+  male_results <- run_simple_glm(
+    panel_data = filter(panel_data, gender_factor == "Male"),
+    pollutant_name = pollutant
+  ) %>% mutate(gender = "Male", .before = 1)
+  
+  # 为女性运行【新版】模型函数
+  female_results <- run_simple_glm(
+    panel_data = filter(panel_data, gender_factor == "Female"),
+    pollutant_name = pollutant
+  ) %>% mutate(gender = "Female", .before = 1)
+  
   stratified_results <- bind_rows(male_results, female_results) %>% filter(term != "(Intercept)")
   
   # --- b. 【新】为两个结果表格添加显著性星号 ---
