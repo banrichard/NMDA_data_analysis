@@ -36,6 +36,10 @@ my.dat_with_pop <- my.dat %>%
   mutate(year = as.integer(substr(`Date of onset1`, 1, 4))) %>%
   left_join(population_long, by = c("Residential address" = "City", "year" = "year")) %>%
   relocate(year, population, .before = `Date of onset1`)
+output_path <- "~/NMDA/data/NMDA_with_population.xlsx"
+
+# 2. 使用 write_xlsx() 函数进行保存
+write_xlsx(my.dat_with_pop, path = output_path)
 
 # d. 读取并准备污染物暴露数据库 (summary_wide)
 main_folder <- "~/NMDA/data/air_quality_new/month"
