@@ -32,7 +32,7 @@ my.dat <- my.dat %>%mutate(
   age_014_protion = as.numeric(as.character(age_014_protion))
 ) %>%
   relocate(sex_ratio_MvsW, age_014_protion, .before = `Date of onset1`)
-
+pollutants_to_analyze <- get_pollutant_list(data = my.dat, marker_column = "Date of onset1")
 population_long <- readxl::read_xlsx("./data/guangdong_population.xlsx") %>%
   filter(City != "Guangdong") %>%
   pivot_longer(
@@ -117,11 +117,11 @@ list_of_final_panels <- purrr::map(pollutants_to_analyze, ~{
 # 6. 为列表命名，方便后续按名字访问
 names(list_of_final_panels) <- pollutants_to_analyze
 
-pollutants_to_analyze <- get_pollutant_list(data = my.dat, marker_column = "Date of onset1")
 
 
-dir.create("adjusted_glm_plots_sex_age", showWarnings = FALSE)
-dir.create("adjusted_glm_reports_sex_age", showWarnings = FALSE)
+
+dir.create("adjusted_vglm_plots_age", showWarnings = FALSE)
+dir.create("adjusted_vglm_reports_age", showWarnings = FALSE)
 
 
 # =================================================================
@@ -131,7 +131,7 @@ dir.create("adjusted_glm_reports_sex_age", showWarnings = FALSE)
 cat("\n--- 开始批量运行带协变量的 GLM 模型并生成结果 ---\n")
 
 # 定义您想在模型中调整的协变量
-covariates_to_include <- c("sex_ratio_MvsW","age_014_protion")
+covariates_to_include <- c("age_014_protion")
 for (pollutant in pollutants_to_analyze) {
   
   cat(paste0("\n正在处理: ", pollutant, " ...\n"))
@@ -139,61 +139,57 @@ for (pollutant in pollutants_to_analyze) {
   # a. 从列表中获取当前污染物的面板数据
   current_panel <- list_of_final_panels[[pollutant]]
   # b. 运行带 offset 的 GLM 模型
-  glm_results <- run_adjusted_glm(
+  vglm_results <- run_adjusted_vglm(
     panel_data = current_panel,
     pollutant_name = pollutant,
     covariates = covariates_to_include
   )
   
-  # c. 为结果添加显著性星号
-  glm_summary_with_stars <- glm_results$summary_table %>%
+  if (is.null(vglm_results)) next
+  
+  # --- b. 为结果添加显著性星号 ---
+  summary_with_stars <- vglm_results$summary_table %>%
     mutate(
-      signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", ""))
+      signif = cut(`Pr(>|z|)`, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", ""))
     )
   
-  # d. 准备绘图用的 estbeta 矩阵
-  summary_table <- glm_results$summary_table
-  
-  # 然後，從這個表中篩選並重塑
-  estbeta_from_glm <- summary_table %>%
-    
-    # 【關鍵修正】只保留截距項，以及與模型名稱相同的效應項
-    # 例如，對於 model = "AQI_M0"，我們只保留 term 為 "(Intercept)" 和 "AQI_M0" 的兩行
+  # --- c. 准备绘图用的 estbeta 矩阵 ---
+  estbeta <- vglm_results$summary_table %>%
     filter(term == "(Intercept)" | term == model) %>%
-    
-    # 後續的重塑代碼現在可以安全運行，因為每個模型只剩兩行
     mutate(term_type = if_else(term == "(Intercept)", "Intercept", "Slope")) %>%
-    select(model, term_type, estimate) %>%
-    pivot_wider(names_from = term_type, values_from = estimate) %>%
+    select(model, term_type, Estimate) %>%
+    pivot_wider(names_from = term_type, values_from = Estimate) %>%
     arrange(model) %>%
     select(Intercept, Slope) %>%
     as.matrix()
   
-  
-  # e. 准备绘图坐标
+  # --- d. 准备绘图坐标 ---
   y_coords <- 0:3
   pollutant_M0_col <- paste0(pollutant, "_M0")
   x_range <- range(final_complete_panel[[pollutant_M0_col]], na.rm = TRUE)
   x_coords <- seq(x_range[1], x_range[2], length.out = 50)
-  z_matrix <- outer(x_coords, y_coords, function(x, y) exp(estbeta_from_glm[(y + 1), 1] + x * estbeta_from_glm[(y + 1), 2]))
   
-  # f. 绘图并保存
-  output_filename_jpeg <- file.path("adjusted_glm_plots_sex_age", paste0(pollutant, "_month.jpeg"))
+  # 计算 z 值，其含义是“给定有病例，预测的平均病例数”
+  z_matrix <- outer(x_coords, y_coords, function(x, y) exp(estbeta[(y + 1), 1] + x * estbeta[(y + 1), 2]))
+  
+  # --- e. 绘图和保存 ---
+  output_filename_jpeg <- file.path("adjusted_vglm_plots_age", paste0(pollutant, "_adjusted_plot.jpeg"))
   jpeg(output_filename_jpeg, width = 560, height = 500, quality = 100)
   persp(x_coords, y_coords, z_matrix, 
-        theta = 45, phi = 30, expand = 0.75, 
-        col = "#8491B4", 
-        xlab = paste("\n", pollutant), ylab = "\nLag (Month)", zlab = "\n\nIncidence Risk Ratio",
+        theta = 45, phi = 30, expand = 0.75, col = "#8491B4", 
+        xlab = paste("\n", pollutant), ylab = "\nLag (Month)", 
+        # Z轴含义已更新
+        zlab = "\n\nPredicted Mean Count (n>0)",
         ticktype = "detailed", nticks = 4)
   dev.off()
   
-  # g. 生成并保存 HTML 表格
-  output_filename_html <- file.path("adjusted_glm_reports_sex_age", paste0(pollutant, "_summary.html"))
-  analysis_table <- kable(glm_summary_with_stars, digits = 4, align = "c", 
-                          caption = paste0("Summary of ", pollutant, " Results"), format = "html")
+  # --- f. 生成并保存 HTML 表格 ---
+  output_filename_html <- file.path("adjusted_vglm_reports_age", paste0(pollutant, "_adjusted_summary.html"))
+  analysis_table <- kable(summary_with_stars, digits = 4, align = "c", 
+                          caption = paste0("Summary of ", pollutant, " Adjusted VGLM Results (Zero-Truncated)"), format = "html")
   cat(analysis_table, file = output_filename_html)
   
-  cat(paste0(" -> ", pollutant, " 的图表和报告已保存。\n"))
+  cat(paste0(" -> ", pollutant, " 的调整后图表和报告已保存。\n"))
 }
 
 cat("\n--- 所有分析流程执行完毕！ ---\n")
