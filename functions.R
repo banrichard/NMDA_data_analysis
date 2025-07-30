@@ -995,3 +995,97 @@ run_vglm_analysis <- function(reg_data, pollutant_name) {
     )
   )
 }
+
+#' 运行带有协变量和 offset 的 GLM 模型
+#'
+#' @param panel_data 您的面板数据框。
+#' @param pollutant_name 要分析的污染物的基础名称。
+#' @param covariates 一个包含了所有协变量列名的字符向量。
+#' @param pop_col 人口数据列的名称。
+#' @return 一个包含了所有模型结果的汇总数据框。
+
+run_adjusted_glm <- function(panel_data, pollutant_name, covariates, pop_col = "population") {
+  
+  # --- !! 新增的修復步驟 !! ---
+  # 在運行模型前，將輸入的 tibble 強制轉換為標準的 data.frame
+  # 這可以解決與舊版基礎 R 函數的兼容性問題
+  panel_data <- as.data.frame(panel_data)
+  # --- 修復結束 ---
+
+  # --- 後續所有代碼保持不變 ---
+  
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  covariates_string <- paste(covariates, collapse = " + ")
+  
+  models_list <- purrr::map(lag_cols, ~{
+    
+    model_formula <- as.formula(
+      paste("n ~", .x, "+", covariates_string, "+ offset(log(", pop_col, "))")
+    )
+    
+    glm(model_formula, family = poisson(link = "log"), data = panel_data)
+  })
+  
+  names(models_list) <- lag_cols
+  
+  summary_table <- purrr::map_dfr(models_list, broom::tidy, .id = "model")
+  
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}
+
+
+#' 运行带有协变量的零截断泊松回归模型 (vglm)
+#'
+#' @param panel_data 您的面板数据框 (可以是完整的，函数内部会自动筛选 n > 0)。
+#' @param pollutant_name 要分析的污染物的基础名称。
+#' @param covariates 一个包含了所有协变量列名的字符向量。
+#' @return 一个包含了所有模型结果的汇总数据框。
+
+run_adjusted_vglm <- function(panel_data, pollutant_name, covariates) {
+  
+  # --- 1. 【关键】筛选出 n > 0 的数据子集 ---
+  data_for_vglm <- panel_data %>%
+    filter(n > 0)
+  
+  # 如果筛选后没有数据，则停止
+  if (nrow(data_for_vglm) == 0) {
+    warning(paste("对于污染物", pollutant_name, "，没有找到任何 n > 0 的数据行，已跳过建模。"))
+    return(NULL)
+  }
+  
+  # --- 2. 动态构建模型公式 (与之前类似，但无 offset) ---
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  covariates_string <- paste(covariates, collapse = " + ")
+  
+  models_list <- purrr::map(lag_cols, ~{
+    # 动态创建包含协变量的公式
+    model_formula <- as.formula(
+      paste("n ~", .x, "+", covariates_string)
+    )
+    # 使用 vglm 和 pospoisson
+    VGAM::vglm(model_formula, family = VGAM::pospoisson(), data = data_for_vglm)
+  })
+  
+  names(models_list) <- lag_cols
+  
+  # --- 3. 提取结果 (使用 vglm 的手动提取方法) ---
+  summary_table <- purrr::map_dfr(
+    models_list,
+    ~ as.data.frame(summary(.x)@coef3) %>%
+      tibble::rownames_to_column(var = "term"),
+    .id = "model"
+  )
+  
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}

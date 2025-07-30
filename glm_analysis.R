@@ -33,12 +33,22 @@ population_long <- population %>%
   # c. 将 year 列从文本转换为数值，便于后续匹配
   mutate(year = as.integer(year))
 
-my_dat_with_year <- my.dat %>%
+my.dat <- my.dat %>%
   mutate(
     # 从 "YYYY-MM" 格式的文本中，提取前4个字符并转为数值
     year = as.integer(substr(`Date of onset1`, 1, 4))
   )%>%
   relocate(year, .before = `Date of onset1`)
+
+my.dat <- left_join(
+  my.dat,
+  population_long,
+  # 【关键】指定使用两个列来进行匹配
+  by = c("Residential address" = "City", "year" = "year")
+) %>%
+  relocate(population, .before = `Date of onset1`)
+
+
 
 na_counts <- colSums(is.na(my.dat))
 na_summary <- data.frame(
@@ -110,7 +120,7 @@ list_of_glm_results <- purrr::map(pollutants_to_analyze, ~{
   current_panel <- list_of_final_panels[[pollutant_name]]
   
   # 调用我们新的 GLM 分析函数
-  run_glm_analysis(
+  run_glm_analysis_with_offset(
     panel_data = current_panel,
     pollutant_name = pollutant_name
   )
