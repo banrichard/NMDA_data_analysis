@@ -1089,3 +1089,53 @@ run_adjusted_vglm <- function(panel_data, pollutant_name, covariates) {
     )
   )
 }
+
+
+#' 运行带有协变量和 offset 的 ordinal logistic regression 模型
+#' 需要调用ordinal包
+#' @param panel_data 您的面板数据框。
+#' @param pollutant_name 要分析的污染物的基础名称。
+#' @param covariates 一个包含了所有协变量列名的字符向量。
+#' @param pop_col 人口数据列的名称。
+#' @return 一个包含了所有模型结果的汇总数据框。
+
+run_csf_clm <- function(panel_data, pollutant_name, covariates, pop_col = "population") {
+  
+  # --- !! 新增的修復步驟 !! ---
+  # 在運行模型前，將輸入的 tibble 強制轉換為標準的 data.frame
+  # 這可以解決與舊版基礎 R 函數的兼容性問題
+  panel_data <- as.data.frame(panel_data)
+  # --- 修復結束 ---
+  
+  # 确保 CSFRank 是一个有序因子
+  if (!is.ordered(panel_data$CSFrank)) {
+    panel_data$CSFrank <- factor(panel_data$CSFrank, ordered = TRUE)
+  }
+  
+  # --- 後續所有代碼保持不變 ---
+  
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  covariates_string <- paste(covariates, collapse = " + ")
+  
+  models_list <- purrr::map(lag_cols, ~{
+    
+    model_formula <- as.formula(
+      paste("CSFrank ~", .x, "+", covariates_string, "+ offset(log(", pop_col, "))")
+    )
+    
+    ordinal::clm(model_formula, data = panel_data)
+  })
+  
+  names(models_list) <- lag_cols
+  
+  summary_table <- purrr::map_dfr(models_list, broom::tidy, .id = "model")
+  
+  return(
+    list(
+      models = models_list,
+      summary_table = summary_table
+    )
+  )
+}
+
