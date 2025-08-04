@@ -14,37 +14,31 @@ unique(reg.dat$`anti-NMDAR antibody titer in CSF`)
 reg.dat$CSFrank<-NA
 for (i in 1:nrow(reg.dat)) {
   if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="+" ) {
-    reg.dat$CSFrank[i]=1
+    reg.dat$CSFrank[i]=3
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1：1000" ) {
     reg.dat$CSFrank[i]=1
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:320" ) {
-    reg.dat$CSFrank[i]=2
+    reg.dat$CSFrank[i]=1
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:300" ) {
-    reg.dat$CSFrank[i]=2
+    reg.dat$CSFrank[i]=1
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:100+" ) {
-    reg.dat$CSFrank[i]=3
+    reg.dat$CSFrank[i]=2
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:100" ) {
-    reg.dat$CSFrank[i]=3
+    reg.dat$CSFrank[i]=2
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="positive" ) {
-    reg.dat$CSFrank[i]=3
+    reg.dat$CSFrank[i]=2
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:32" ) {
-    reg.dat$CSFrank[i]=4
+    reg.dat$CSFrank[i]=2
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:30" ) {
-    reg.dat$CSFrank[i]=4
+    reg.dat$CSFrank[i]=2
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="++" ) {
-    reg.dat$CSFrank[i]=4
-  }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="4.8611111111111112E-2" ) {
-    reg.dat$CSFrank[i]=5
-  }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="6.25E-2" ) {
-    reg.dat$CSFrank[i]=6
-  }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="6.3888888888888884E-2" ) {
-    reg.dat$CSFrank[i]=6
+    reg.dat$CSFrank[i]=3
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:10" ) {
-    reg.dat$CSFrank[i]=7
+    reg.dat$CSFrank[i]=3
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:3.2" ) {
-    reg.dat$CSFrank[i]=8
+    reg.dat$CSFrank[i]=3
   }else if( reg.dat$`anti-NMDAR antibody titer in CSF`[i]=="1:1" ) {
-    reg.dat$CSFrank[i]=9
+    reg.dat$CSFrank[i]=3
   }
 }  
   
