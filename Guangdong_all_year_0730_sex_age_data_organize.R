@@ -1,5 +1,7 @@
 getwd()
 library(openxlsx)
+library(dplyr)
+library(tidyr)
 
 age.sex.dat<-readxl::read_xlsx("Age_sex.xlsx")
 View(age.sex.dat)
@@ -38,4 +40,33 @@ for (irow in 1:nrow(reg.dat)) {
   reg.dat$age_014_protion[irow]=age.portion.dat[rownumber,3]
 }
 
+######################### population ################
+reg.dat$population=NA
+population.dat<-readxl::read_xlsx("guangdong_population.xlsx")
+View(population.dat)
+
+for (i in 1:nrow(reg.dat)){
+  reg.dat$population[i]= as.numeric(population.dat[which(population.dat$City==reg.dat$city[i]),as.numeric(reg.dat$year[i]-2012)])
+}
+
+################ number of incidence cases for each city and each month #######
+
+inc.dat<-readxl::read_xlsx("NMDA_with_population_sex_ratio_age_portion.xlsx")
+View(inc.dat)
+
+summary_inc <- inc.dat %>%
+  group_by(`Residential address`, `Date of onset1`) %>%
+  summarise(count = n(), .groups = 'drop')
+
+print(summary_inc)
+
+names(summary_inc)=c("city","year_month","count")
+
+reg.dat <- reg.dat %>%
+  left_join(summary_inc, by = c("city", "year_month")) %>%
+  rename(inc_count = count) 
+
+reg.dat$inc_count[is.na(reg.dat$inc_count)] <- 0
+
+###########################################
 write.xlsx(reg.dat, "guangdong_all_years_summary_with_sex_ratio_age_portion.xlsx")
