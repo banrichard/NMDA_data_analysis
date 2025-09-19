@@ -1089,3 +1089,82 @@ run_adjusted_vglm <- function(panel_data, pollutant_name, covariates) {
     )
   )
 }
+
+run_symptom_analysis <- function(data, pollutant_name, outcome_var) {
+  
+  # --- 1. 檢查因變量的有效類別數 (不變) ---
+  n_levels <- length(unique(na.omit(data[[outcome_var]])))
+  
+  if (n_levels < 2) {
+    cat(paste0("  -> 警告: 因變量 '", outcome_var, "' 的有效類別少於2個，已跳過分析。\n"))
+    return(NULL)
+  }
+  
+  # 準備模型公式 (不變)
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  model_formulas_rhs <- list(
+    Model1 = lag_cols[1], Model2 = lag_cols[2], Model3 = lag_cols[3], Model4 = lag_cols[4],
+    Model5 = paste(lag_cols[1:2], collapse = " + "),
+    Model6 = paste(lag_cols[1:3], collapse = " + "),
+    Model7 = paste(lag_cols[1:4], collapse = " + ")
+  )
+  
+  # --- 3. 運行模型 (不變) ---
+  if (n_levels >= 3) {
+    model_type <- "polr"
+    models_list <- purrr::map(model_formulas_rhs, ~{
+      full_formula <- as.formula(paste0("`", outcome_var, "` ~ ", .x))
+      MASS::polr(full_formula, data = data, Hess = TRUE)
+    })
+  } else { # n_levels == 2
+    model_type <- "glm_binomial"
+    models_list <- purrr::map(model_formulas_rhs, ~{
+      full_formula <- as.formula(paste0("`", outcome_var, "` ~ ", .x))
+      glm(full_formula, data = data, family = binomial(link = "logit"))
+    })
+  }
+
+  
+  if (model_type == "polr") {
+    # 對於 polr 模型，我們手動提取並計算 p-value
+    coeffs_summary <- purrr::map_dfr(models_list, ~{
+      
+      # 提取 summary 中的係數表
+      coef_table <- coef(summary(.x))
+      # 手動計算 p-value
+      p_values <- 2 * pt(abs(coef_table[, "t value"]), df = df.residual(.x), lower.tail = FALSE)
+      
+      # 創建一個整潔的數據框
+      tibble::tibble(
+        term = rownames(coef_table),
+        estimate = coef_table[, "Value"],
+        std.error = coef_table[, "Std. Error"],
+        statistic = coef_table[, "t value"],
+        p.value = p_values # <-- 現在我們有了 p.value 欄位！
+      )
+    }, .id = "model_name")
+    
+  } else { # model_type is "glm_binomial"
+    # 對於 glm 模型，broom::tidy 依然是最好的選擇
+    coeffs_summary <- purrr::map_dfr(models_list, broom::tidy, .id = "model_name")
+  }
+  
+  # 將模型類型標記添加到最終結果中
+  coeffs_summary <- coeffs_summary %>%
+    mutate(model_type = model_type, .before = 1)
+  
+  # Anova 部分保持不變
+  anova_summary <- if (model_type == "polr") {
+    purrr::map_dfr(models_list, ~ broom::tidy(car::Anova(.)), .id = "model_name")
+  } else {
+    NULL
+  }
+  
+  return(
+    list(
+      models = models_list,
+      coefficients = coeffs_summary,
+      anovas = anova_summary
+    )
+  )
+}
