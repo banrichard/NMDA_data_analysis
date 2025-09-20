@@ -1123,7 +1123,8 @@ run_symptom_analysis <- function(data, pollutant_name, outcome_var) {
       glm(full_formula, data = data, family = binomial(link = "logit"))
     })
   }
-
+  
+  # --- !! 4. 【關鍵修正】根據模型類型，使用不同的方法提取結果 !! ---
   
   if (model_type == "polr") {
     # 對於 polr 模型，我們手動提取並計算 p-value
