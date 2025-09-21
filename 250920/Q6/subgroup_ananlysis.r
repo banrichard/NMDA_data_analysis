@@ -62,8 +62,24 @@ my.dat_prepared <- my.dat.raw %>%
       if_else(tumor == 0 | tumor == "0", "No_Tumor", "Has_Tumor"),
       levels = c("No_Tumor", "Has_Tumor")
     ),
+    other_antibodies_status = factor(
+      if_else(
+        
+        # 條件：如果 `other antibodies and titers` 這一列是 NA (缺失值)
+        is.na(`other antibodies and titers`), 
+        
+        # 如果為真，則賦值為 "No"
+        "No", 
+        
+        # 如果為假（即，只要這一欄裡有任何內容），則賦值為 "Yes"
+        "Yes"
+      ),
+      levels = c("No", "Yes")
+    )
   )%>%
-  relocate(gender_factor,age_group,season,smoking_status,marital_status,tumor_status,sex_ratio_MvsW,age_014_protion,onset_month, .before = `Date of onset1`)
+  relocate(gender_factor,age_group,season,smoking_status,marital_status,tumor_status,sex_ratio_MvsW,age_014_protion,onset_month,other_antibodies_status, .before = `Date of onset1`)
+
+
 pollutants_to_analyze <- get_pollutant_list(data = my.dat_prepared, marker_column = "Date of onset1")
 
 generate_subgroup_report <- function(pollutant, strata_variable, case_data, summary_data, city_map_data) {
@@ -126,7 +142,7 @@ for (pollutant in pollutants_to_analyze) {
   
   # c. 內層循環：遍歷【每個亞組因素】
   subgroup_vars <- c("gender_factor", "age_group", "season", "smoking_status", 
-                     "marital_status","tumor_status")
+                     "marital_status","tumor_status","other_antibodies_status")
   
   for (strata in subgroup_vars) {
     
