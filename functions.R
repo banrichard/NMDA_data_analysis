@@ -1169,41 +1169,62 @@ run_symptom_analysis <- function(data, pollutant_name, outcome_var) {
     )
   )
 }
-run_multi_pollutant_model <- function(data, outcome_var, pollutant_combo, lag_period) {
+# In functions.R
+
+run_analysis_model <- function(data, outcome_var, pollutant_combo, lag_period) {
   
-  # --- 1. 检查因变量的有效类别数，以决定模型类型 ---
-  n_levels <- length(unique(na.omit(data[[outcome_var]])))
+  # --- 1. 數據和變量準備 (不變) ---
+  data <- as.data.frame(data)
+  valid_data <- data[!is.na(data[[outcome_var]]), ]
+  n_levels <- length(unique(valid_data[[outcome_var]]))
   
-  if (n_levels < 2) { return(NULL) } # 如果类别太少则跳过
+  if (n_levels < 2) { return(NULL) }
   
-  # --- 2. 动态构建模型公式 ---
-  # a. 根据污染物组合和滞后期，创建所有自变量的名称
   predictor_cols <- paste0(pollutant_combo, "_M", lag_period)
+  if (!all(predictor_cols %in% names(data))) { return(NULL) }
   
-  # b. 检查数据中是否存在所有需要的自变量列
-  if (!all(predictor_cols %in% names(data))) {
-    warning(paste("Data is missing one or more required columns for the combo:", paste(predictor_cols, collapse=", ")))
-    return(NULL)
-  }
-  
-  # c. 将自变量用 "+" 连接起来
   predictors_string <- paste(predictor_cols, collapse = " + ")
-  
-  # d. 创建完整公式，并用反引号保护因变量名
   model_formula <- as.formula(paste0("`", outcome_var, "` ~ ", predictors_string))
   
-  # --- 3. 根据类别数选择并运行模型 ---
-  if (n_levels >= 3) { # 有序结局 -> polr
-    model_fit <- MASS::polr(model_formula, data = data, Hess = TRUE)
-    # 手动整理 polr 结果并计算 p-value
+  # --- 2. 根據類別數選擇並運行模型 (不變) ---
+  if (n_levels >= 3) {
+    model_type <- "Ordinal (polr)"
+    model_fit <- tryCatch(
+      MASS::polr(model_formula, data = data, Hess = TRUE),
+      error = function(e) NULL
+    )
+  } else {
+    model_type <- "Logistic (glm)"
+    model_fit <- tryCatch(
+      glm(model_formula, data = data, family = binomial(link = "logit")),
+      error = function(e) NULL
+    )
+  }
+  
+  if (is.null(model_fit)) return(NULL)
+  
+  # --- !! 3. 【徹底重寫】根據模型類型，使用不同的方法提取結果 !! ---
+  
+  if (model_type == "Ordinal (polr)") {
+    # 對於 polr 模型，我們手動提取並計算 p-value
     coef_table <- coef(summary(model_fit))
     p_values <- 2 * pt(abs(coef_table[, "t value"]), df = df.residual(model_fit), lower.tail = FALSE)
-    results_df <- as.data.frame(coef_table) %>%
-      mutate(p.value = p_values) %>%
-      tibble::rownames_to_column(var = "term")
-  } else { # 二元结局 -> glm(binomial)
-    model_fit <- glm(model_formula, data = data, family = binomial(link = "logit"))
-    results_df <- broom::tidy(model_fit)
+    
+    # 【全新寫法】直接用 data.frame() 創建最終結果，不再使用 select 或 rename
+    results_df <- data.frame(
+      model_type = model_type,
+      term = rownames(coef_table),
+      estimate = coef_table[, "Value"],
+      std.error = coef_table[, "Std. Error"],
+      statistic = coef_table[, "t value"],
+      p.value = p_values
+    )
+    rownames(results_df) <- NULL # 清除舊的行名
+    
+  } else { # model_type is "Logistic (glm)"
+    # glm 模型可以繼續安全地使用 broom::tidy
+    results_df <- broom::tidy(model_fit) %>%
+      mutate(model_type = model_type, .before = 1)
   }
   
   return(results_df)

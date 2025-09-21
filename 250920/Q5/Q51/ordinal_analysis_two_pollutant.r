@@ -6,14 +6,17 @@ library(purrr)
 library(tidyr)
 library(VGAM)
 library(knitr)
+library(kableExtra)
 library(corrplot)
-source("functions.R") # 确保其中有 get_pollutant_list 和 run_vglm_analysis 函数
 
 # --- 2. 数据准备 ---
 setwd("~/NMDA/")
+source("~/NMDA/functions.R") # 确保其中有 get_pollutant_list 和 run_vglm_analysis 函数
 # a. 读取原始病人数据
 my.dat <- readxl::read_xlsx("./NMDA_with_population_sex_ratio_age_portion.xlsx")%>%
   relocate(sex_ratio_MvsW,age_014_protion, .before = `Date of onset1`)
+main_folder <- "~/NMDA/data/air_quality_new/month"
+city_map <- get_city_map()
 summary_wide <- process_all_subfolder_data(
   main_folder_path = main_folder,
   city_map_df = city_map
@@ -24,7 +27,6 @@ my.dat <- my.dat %>%
   )
 
 # b. 准备城市名字典（用于获取完整的城市列表，以防万一）
-city_map <- get_city_map()
 
 symptom_columns <- c(
   "Seizures", "Memory dysfunction", "Psychiatric symptoms", "Coma", 
@@ -33,16 +35,9 @@ symptom_columns <- c(
 )
 
 
-
-# 2. 检查这些列是否存在于 my.dat 中
-missing_cols <- setdiff(symptom_columns, names(my.dat))
-if (length(missing_cols) > 0) {
-  stop(paste("错误：您的 my.dat 数据中缺少以下症状列:", paste(missing_cols, collapse=", ")))
-}
-
 # 3. 【关键】使用 across() 将所有症状列转换为有序因子
 #    我们假设列中的值（无论是数字还是文本）已经自然有序
-my.dat_prepared_for_symptoms <- my.dat %>%
+my.dat_prepared <- my.dat %>%
   mutate(
     across(
       all_of(symptom_columns), 
@@ -55,7 +50,7 @@ brainstem_level_order <- c(
   "1+2", "1+3", "2+3", 
   "1+2+3"
 )
-my.dat_prepared_for_symptoms <- my.dat_prepared_for_symptoms %>%
+my.dat_prepared <- my.dat_prepared %>%
   mutate(
     `Brainstem dysfunction` = factor(
       `Brainstem dysfunction`, 
@@ -64,98 +59,135 @@ my.dat_prepared_for_symptoms <- my.dat_prepared_for_symptoms %>%
     )
   )
 
-
 purrr::walk(symptom_columns, ~{
   
   symptom_name <- .x
   
   # 使用 table() 來查看這個症狀列到底有幾個有效的、非 NA 的類別
-  level_distribution <- table(my.dat_prepared_for_symptoms[[symptom_name]])
+  level_distribution <- table(my.dat_prepared[[symptom_name]])
   
   cat("\n--- 正在檢查症狀: '", symptom_name, "' ---\n")
   print(level_distribution)
   cat("有效類別數量:", length(level_distribution), "\n")
-  
 })
 
-output_folder <- "./symptom_analysis_report"
-dir.create(output_folder, showWarnings = FALSE)
-markdown_report_parts <- list()
+pollutants_to_analyze <- get_pollutant_list(data = my.dat, marker_column = "Date of onset1")
+canonical_pollutants <- tibble(original_name = pollutants_to_analyze) %>%
+  mutate(base_name = str_remove(original_name, "_.*h$")) %>%
+  group_by(base_name) %>%
+  summarise(canonical_name = original_name[which.min(nchar(original_name))]) %>%
+  pull(canonical_name)
+
+# b. 生成两两组合和三三组合
+two_pollutant_combos <- as.list(as.data.frame(combn(canonical_pollutants, 2)))
+three_pollutant_combos <- as.list(as.data.frame(combn(canonical_pollutants, 3)))
 
 
-# =================================================================
-# 核心：双重循环
-# =================================================================
-cat("\n--- 开始批量运行症状与污染物的有序回归分析 ---\n")
 
-# --- 1. 外层循环：遍历每一种症状 ---
-for (symptom_name in symptom_columns) {
+# --- 4. 自動化分析與報告生成 ---
+# a. 初始化 Markdown 片段列表和結果文件夾
+report_dir <- "/Users/banlujie/NMDA/250920/Q5/Q52"
+dir.create(report_dir, showWarnings = FALSE)
+html_parts <- list()
+markdown_parts <- list("# 多污染物联合效应分析報告\n")
+
+# b. 核心循環
+cat("--- 開始批量運行所有模型 ---\n")
+
+for (outcome in symptom_columns) {
   
-  markdown_report_parts[[paste0("header_", symptom_name)]] <- paste0("\n## 分析症状: ", symptom_name)
+  cat(paste0("\n--- 正在分析結局: ", outcome, " ---\n"))
   
-  # --- 2. 内层循环：对于当前症状，遍历每一种污染物 ---
-  for (pollutant in pollutants_to_analyze) {
-    
-    cat(paste0("  - 正在分析 ", symptom_name, " vs ", pollutant, "...\n"))
-    
-    # a. 调用分析函数
-    ordinal_results <- run_symptom_analysis(
-      data = my.dat_prepared_for_symptoms,
-      pollutant_name = pollutant,
-      outcome_var = symptom_name
-    )
-    
-    # --- !! 【关键修正】检查函数返回结果是否有效 !! ---
-    #    如果 ordinal_results 不是 NULL (即模型成功运行)，才执行后续步骤
-    if (!is.null(ordinal_results)) {
-      
-      # b. 从 $coefficients 中获取主要结果，并添加显著性星号 (已移除多余的逗号)
-      summary_with_stars <- ordinal_results$coefficients %>%
-        mutate(
-          signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", ""))
-        )
-      
-      # c. 生成 Markdown 文本
-      md_header <- paste0("### 污染物: ", pollutant)
-      md_table <- kable(
-        summary_with_stars, 
-        format = "markdown",
-        digits = 4, 
-        caption = paste("模型汇总:", pollutant, "对", symptom_name, "的影响")
-      )
-      
-      # d. 将当前这个“症状-污染物”组合的结果存入列表
-      part_name <- paste(symptom_name, pollutant, sep = "_")
-      markdown_report_parts[[part_name]] <- paste(
-        md_header,
-        paste(md_table, collapse = "\n"),
-        collapse = "\n\n"
-      )
-      
-    } else {
-      # 如果模型没有运行（例如因为症状类别<2），我们也记录一下
-      part_name <- paste(symptom_name, pollutant, sep = "_")
-      markdown_report_parts[[part_name]] <- paste0(
-        "### 污染物: ", pollutant, 
-        "\n\n*注意：由于因变量 '", symptom_name, "' 的有效类别不足，模型未运行。*\n"
-      )
-    }
+  # i. 為當前結局添加一個大的 HTML 標題
+  outcome_header_html <- paste0("<h2>症状: ", outcome, "</h2>")
+  
+  # # --- ii. 分析兩污染物模型 ---
+  # subheader2_html <- "<h3>两污染物模型结果</h3>"
+  # 
+  # two_pollutant_results <- purrr::map_dfr(two_pollutant_combos, ~{
+  #   purrr::map_dfr(0:3, ~{
+  #     run_analysis_model(my.dat_prepared, outcome, .y, .x) %>% 
+  #       { if (!is.null(.)) mutate(., lag = .x) else tibble() }
+  #   }, .y = .x, .id = "lag_id_unused")
+  # }, .id = "combo_id")
+  # 
+  # # 檢查是否有結果，然後生成 HTML 表格
+  # if(nrow(two_pollutant_results) > 0) {
+  #   table2_html <- two_pollutant_results %>%
+  #     mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", ""))) %>%
+  #     knitr::kable(format = "html", digits = 3, caption = "两污染物模型汇总") %>%
+  #     kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+  # } else {
+  #   table2_html <- "<p><i>(无有效结果)</i></p>"
+  # }
+  # 
+  # --- iii. 分析三污染物模型 ---
+  subheader3_html <- "<h3>三污染物模型结果</h3>"
+
+  three_pollutant_results <- purrr::map_dfr(three_pollutant_combos, ~{
+    purrr::map_dfr(0:3, ~{
+      run_analysis_model(my.dat_prepared, outcome, .y, .x) %>%
+        { if (!is.null(.)) mutate(., lag = .x) else tibble() }
+    }, .y = .x, .id = "lag_id_unused")
+  }, .id = "combo_id")
+
+  if(nrow(three_pollutant_results) > 0) {
+    table3_html <- three_pollutant_results %>%
+      mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", ""))) %>%
+      knitr::kable(format = "html", digits = 3, caption = "三污染物模型汇总") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+  } else {
+    table3_html <- "<p><i>(無有效结果)</i></p>"
   }
+  
+  # iv. 將當前結局的所有 HTML 內容組合起來，存入列表
+  html_parts[[outcome]] <- paste(
+    outcome_header_html,
+    # subheader2_html,
+    # table2_html,
+    subheader3_html,
+    table3_html,
+    collapse = "\n\n"
+  )
 }
 
+# --- 4. 將所有 HTML 片段組合起來，並以 UTF-8 編碼寫入一個【完整的】HTML 文件 ---
 
+# a. 創建 HTML 文件的頭部和尾部
+html_full_header <- '
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>多污染物联合效应分析報告</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 2em; line-height: 1.6; }
+  h1, h2, h3 { color: #333; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+  table { border-collapse: collapse; margin: 1.5em 0; }
+  hr { border: 1px solid #eee; margin: 2.5em 0; }
+</style>
+</head>
+<body>
+<h1>多污染物联合效应分析報告</h1>
+'
+html_footer <- '</body></html>'
 
-# =================================================================
-# 最后一步：将所有 Markdown 片段组合成一个完整文件并保存
-# =================================================================
-main_title_md <- "# 污染物浓度与首发症状关系分析报告\n"
-final_markdown_content <- paste(
-  main_title_md,
-  paste(markdown_report_parts, collapse = "\n\n---\n\n"),
+# b. 組合所有內容
+final_html_content <- paste(
+  html_full_header,
+  paste(html_parts, collapse = "<hr>"), # 用水平線分隔每個結局的分析
+  html_footer,
   collapse = "\n"
 )
-output_file <- file.path(output_folder, "symptom_analysis_full_report.md")
-writeLines(final_markdown_content, con = output_file)
 
-cat("\n--- 所有分析流程执行完毕！ ---\n")
-cat("完整的 Markdown 报告已成功保存到:", output_file, "\n")
+# c. 創建結果文件夾並以 UTF-8 編碼寫入文件
+output_file <- file.path(report_dir, "multi_pollutant_full_report.html")
+
+file_conn <- file(output_file, "w", encoding = "UTF-8")
+writeLines(final_html_content, con = file_conn)
+close(file_conn)
+
+cat("\n--- 所有分析流程執行完畢！ ---\n")
+cat("完整的 HTML 報告已成功保存到:", output_file, "\n")
+cat("!!! 請用網頁瀏覽器打開此文件查看最終結果 !!!\n")
+
