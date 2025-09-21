@@ -19,7 +19,7 @@ setwd("~/NMDA/")
 cat("--- 正在准备所有基础数据 ---\n")
 
 # a. 读取病人数据
-my.dat <- readxl::read_xlsx("./data/air_quality_new/NMDA1_with_pollution.xlsx")
+my.dat <- readxl::read_xlsx("./NMDA_with_population_sex_ratio_age_portion.xlsx")
 
 # b. 读取并转换人口数据为长格式
 population_long <- readxl::read_xlsx("./data/guangdong_population.xlsx") %>%
@@ -35,7 +35,7 @@ population_long <- readxl::read_xlsx("./data/guangdong_population.xlsx") %>%
 my.dat_with_pop <- my.dat %>%
   mutate(year = as.integer(substr(`Date of onset1`, 1, 4))) %>%
   left_join(population_long, by = c("Residential address" = "City", "year" = "year")) %>%
-  relocate(year, population, .before = `Date of onset1`)
+  relocate(year, population,sex_ratio_MvsW,age_014_protion, .before = `Date of onset1`)
 output_path <- "~/NMDA/data/NMDA_with_population.xlsx"
 
 # 2. 使用 write_xlsx() 函数进行保存

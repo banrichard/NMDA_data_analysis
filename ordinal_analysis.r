@@ -20,7 +20,6 @@ summary_wide <- process_all_subfolder_data(
 )
 my.dat <- my.dat %>%
   rename(
-    # 新名字 = `舊的、又長又亂的名字`
     `Brainstem dysfunction` = `Brainstem dysfunction（0=none; 1=gaze paresis; 2=tube feeding; 3=ventilator care due to hypoventilation）`
   )
 
