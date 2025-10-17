@@ -1,3 +1,4 @@
+library(writexl)
 get_city_map <- function() {
   
   city_map_data <- data.frame(
@@ -1228,4 +1229,78 @@ run_analysis_model <- function(data, outcome_var, pollutant_combo, lag_period) {
   }
   
   return(results_df)
+}
+
+#' 通过似然比检验搜索最优的年龄分组切点
+#'
+#' @param panel_data 聚合后的面板数据，必须包含 n, Age, 以及污染物滞后列
+#' @param pollutant_combo 一个包含一个或多个污染物名称的字符向量
+#' @param lag_period 要分析的滞后月数（一个数字，例如 0, 1, 2, 或 3）
+#' @param num_groups 要分成的年龄组数（例如 2 或 3）
+#' @param age_range 一个包含两个数字的向量，定义了搜索切点的年龄范围，例如 c(10, 60)
+#' @param min_group_size 每个年龄分组必须包含的最小观测数，以保证模型稳定
+#' @return 一个数据框，包含了所有测试过的切点组合及其对应的 LRT 统计量和 p 值
+
+find_optimal_age_cuts <- function(panel_data, pollutant_name, 
+                                  num_groups = 2, age_range = c(15, 65), 
+                                  min_group_size = 20) {
+  
+  # 1. 生成所有可能的切点组合
+  cut_combinations <- as.list(as.data.frame(
+    combn(age_range[1]:age_range[2], m = num_groups - 1)
+  ))
+  
+  cat(paste0("--- 正在为 '", pollutant_name, "' 测试 ", length(cut_combinations), " 种不同的 ", num_groups, "-组 年龄切点组合 ---\n"))
+  
+  # 2. 动态构建包含所有四个滞后期的自变量字符串
+  #    这些就是您提到的 x1, x2, x3, x4
+  predictor_cols <- paste0(pollutant_name, "_M", 0:3)
+  predictors_string <- paste(predictor_cols, collapse = " + ")
+  
+  # 3. 使用 purrr::map_dfr 迭代所有组合并找到最佳解
+  all_results <- purrr::map_dfr(cut_combinations, ~{
+    
+    current_cuts <- .x
+    
+    # a. 根据当前切点，创建 age_group 变量
+    temp_data <- panel_data %>%
+      mutate(age_group = cut(Age, breaks = c(-Inf, current_cuts, Inf)))
+    
+    # b. 检查每个分组的样本量是否足够大
+    if (min(table(temp_data$age_group)) < min_group_size) {
+      return(NULL)
+    }
+    
+    # c. 构建您指定的【完整交互模型】公式
+    #    y ~ (x1+...+xp) * group  等价于您描述的公式
+    formula_full <- as.formula(paste("n ~ (", predictors_string, ") * age_group"))
+    formula_intercept <- as.formula("n ~ 1") # 用于比较的仅截距模型
+    
+    # d. 运行模型
+    model_full <- tryCatch(glm(formula_full, family = poisson(), data = temp_data), error = function(e) NULL)
+    model_intercept <- tryCatch(glm(formula_intercept, family = poisson(), data = temp_data), error = function(e) NULL)
+    
+    if (is.null(model_full) || is.null(model_intercept)) return(NULL)
+    
+    # e. 执行似然比检验，获得完整模型的【全局显著性 p 值】
+    global_test <- lmtest::lrtest(model_intercept, model_full)
+    
+    # f. 提取结果
+    tibble::tibble(
+      cut_points = paste(current_cuts, collapse = ", "),
+      model_global_p_value = global_test$`Pr(>Chisq)`[2]
+    )
+  })
+  
+  # 4. 如果没有找到任何有效结果，则返回 NULL
+  if (nrow(all_results) == 0) {
+    return(NULL)
+  }
+  
+  # 5. 【关键】从所有测试结果中，找到 p 值最小的那一行并返回
+  best_result <- all_results %>%
+    arrange(model_global_p_value) %>%
+    slice_head(n = 1)
+  
+  return(best_result)
 }
