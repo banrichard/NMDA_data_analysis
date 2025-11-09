@@ -19,31 +19,31 @@ my.dat.raw<- my.dat.raw %>%relocate('sex_ratio_MvsW','age_014_protion', .before 
 my.dat.raw$CSFrank<-NA
 for (i in 1:nrow(my.dat.raw)) {
   if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="+" ) {
-    my.dat.raw$CSFrank[i]=1
+    my.dat.raw$CSFrank[i]=3
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1：1000" ) {
-    my.dat.raw$CSFrank[i]=1
+    my.dat.raw$CSFrank[i]=3
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:320" ) {
-    my.dat.raw$CSFrank[i]=1
+    my.dat.raw$CSFrank[i]=3
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:300" ) {
-    my.dat.raw$CSFrank[i]=1
+    my.dat.raw$CSFrank[i]=3
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:100+" ) {
     my.dat.raw$CSFrank[i]=2
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:100" ) {
     my.dat.raw$CSFrank[i]=2
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="positive" ) {
-    my.dat.raw$CSFrank[i]=1
+    my.dat.raw$CSFrank[i]=3
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:32" ) {
     my.dat.raw$CSFrank[i]=2
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:30" ) {
     my.dat.raw$CSFrank[i]=2
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="++" ) {
-    my.dat.raw$CSFrank[i]=3
+    my.dat.raw$CSFrank[i]=1
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:10" ) {
-    my.dat.raw$CSFrank[i]=3
+    my.dat.raw$CSFrank[i]=1
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:3.2" ) {
-    my.dat.raw$CSFrank[i]=3
+    my.dat.raw$CSFrank[i]=1
   }else if( my.dat.raw$`anti-NMDAR antibody titer in CSF`[i]=="1:1" ) {
-    my.dat.raw$CSFrank[i]=3
+    my.dat.raw$CSFrank[i]=1
   }
 }  
 
@@ -61,7 +61,7 @@ my.dat_prepared <- my.dat.raw %>%
     CSFrank = factor(
       CSFrank, 
       levels = c("1", "2", "3"), 
-      labels = c("Weak", "Positive", "Strong"), 
+      labels = c("Strong", "Positive", "Weak"), 
       ordered = TRUE
     )
   )
