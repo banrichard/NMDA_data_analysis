@@ -1,3 +1,4 @@
+library(writexl)
 get_city_map <- function() {
   
   city_map_data <- data.frame(
@@ -1228,4 +1229,593 @@ run_analysis_model <- function(data, outcome_var, pollutant_combo, lag_period) {
   }
   
   return(results_df)
+}
+
+#' 通过似然比检验搜索最优的年龄分组切点
+#'
+#' @param panel_data 聚合后的面板数据，必须包含 n, Age, 以及污染物滞后列
+#' @param pollutant_combo 一个包含一个或多个污染物名称的字符向量
+#' @param lag_period 要分析的滞后月数（一个数字，例如 0, 1, 2, 或 3）
+#' @param num_groups 要分成的年龄组数（例如 2 或 3）
+#' @param age_range 一个包含两个数字的向量，定义了搜索切点的年龄范围，例如 c(10, 60)
+#' @param min_group_size 每个年龄分组必须包含的最小观测数，以保证模型稳定
+#' @return 一个数据框，包含了所有测试过的切点组合及其对应的 LRT 统计量和 p 值
+
+find_optimal_age_cuts <- function(panel_data, pollutant_name, 
+                                  num_groups = 2, age_range = c(15, 65), 
+                                  min_group_size = 20) {
+  
+  # 1. 生成所有可能的切点组合
+  cut_combinations <- as.list(as.data.frame(
+    combn(age_range[1]:age_range[2], m = num_groups - 1)
+  ))
+  
+  cat(paste0("--- 正在为 '", pollutant_name, "' 测试 ", length(cut_combinations), " 种不同的 ", num_groups, "-组 年龄切点组合 ---\n"))
+  
+  # 2. 动态构建包含所有四个滞后期的自变量字符串
+  #    这些就是您提到的 x1, x2, x3, x4
+  predictor_cols <- paste0(pollutant_name, "_M", 0:3)
+  predictors_string <- paste(predictor_cols, collapse = " + ")
+  
+  # 3. 使用 purrr::map_dfr 迭代所有组合并找到最佳解
+  all_results <- purrr::map_dfr(cut_combinations, ~{
+    
+    current_cuts <- .x
+    
+    # a. 根据当前切点，创建 age_group 变量
+    temp_data <- panel_data %>%
+      mutate(age_group = cut(Age, breaks = c(-Inf, current_cuts, Inf)))
+    
+    # b. 检查每个分组的样本量是否足够大
+    if (min(table(temp_data$age_group)) < min_group_size) {
+      return(NULL)
+    }
+    
+    # c. 构建您指定的【完整交互模型】公式
+    #    y ~ (x1+...+xp) * group  等价于您描述的公式
+    formula_full <- as.formula(paste("n ~ (", predictors_string, ") * age_group"))
+    formula_intercept <- as.formula("n ~ 1") # 用于比较的仅截距模型
+    
+    # d. 运行模型
+    model_full <- tryCatch(glm(formula_full, family = poisson(), data = temp_data), error = function(e) NULL)
+    model_intercept <- tryCatch(glm(formula_intercept, family = poisson(), data = temp_data), error = function(e) NULL)
+    
+    if (is.null(model_full) || is.null(model_intercept)) return(NULL)
+    
+    # e. 执行似然比检验，获得完整模型的【全局显著性 p 值】
+    global_test <- lmtest::lrtest(model_intercept, model_full)
+    
+    # f. 提取结果
+    tibble::tibble(
+      cut_points = paste(current_cuts, collapse = ", "),
+      model_global_p_value = global_test$`Pr(>Chisq)`[2]
+    )
+  })
+  
+  # 4. 如果没有找到任何有效结果，则返回 NULL
+  if (nrow(all_results) == 0) {
+    return(NULL)
+  }
+  
+  # 5. 【关键】从所有测试结果中，找到 p 值最小的那一行并返回
+  best_result <- all_results %>%
+    arrange(model_global_p_value) %>%
+    slice_head(n = 1)
+  
+  return(best_result)
+}
+
+#' 運行單一污染物單一滯後期的 GLM 模型並提取結果
+#'
+#' @param panel_data 聚合後的面板數據
+#' @param pollutant_col 完整的污染物滯後列名 (例如, "AQI_M0")
+#' @return 包含 estimate 和 std.error 的單行數據框
+
+run_single_lag_glm <- function(panel_data, pollutant_col) {
+  
+  model_formula <- as.formula(paste("n ~", pollutant_col))
+  
+  # 使用 tryCatch 處理模型可能不收斂的情況
+  model_fit <- tryCatch({
+    glm(model_formula, family = poisson(link = "log"), data = panel_data)
+  }, error = function(e) {
+    message(paste("Warning: Model for", pollutant_col, "failed to converge or has issues:", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(model_fit)) {
+    return(
+      tibble::tibble(
+        pollutant = sub("_M[0-3]", "", pollutant_col), # 提取污染物名稱
+        lag = as.numeric(sub(".*_M", "", pollutant_col)), # 提取滯後期
+        estimate = NA,
+        std.error = NA
+      )
+    )
+  }
+  
+  # 提取污染物係數的 tidy 結果
+  tidy_result <- broom::tidy(model_fit)
+  
+  pollutant_effect_row <- tidy_result %>%
+    dplyr::filter(term == pollutant_col)
+  
+  # 如果沒有找到污染物項，也返回 NA
+  if (nrow(pollutant_effect_row) == 0) {
+    return(
+      tibble::tibble(
+        pollutant = sub("_M[0-3]", "", pollutant_col),
+        lag = as.numeric(sub(".*_M", "", pollutant_col)),
+        estimate = NA,
+        std.error = NA
+      )
+    )
+  }
+  
+  return(
+    tibble::tibble(
+      pollutant = sub("_M[0-3]", "", pollutant_col),
+      lag = as.numeric(sub(".*_M", "", pollutant_col)),
+      estimate = pollutant_effect_row$estimate,
+      std.error = pollutant_effect_row$std.error
+    )
+  )
+}
+
+# In functions.R
+
+#' 運行【有序】交互作用模型 (polr)
+#' @param data 數據框
+#' @param outcome_var 有序因變量名稱
+#' @param exposure_var 單個暴露變量名稱 (例如 "AQI_M0")
+#' @param strata_var 分層變量名稱 (例如 "age_group_specific")
+#' @return 整理好的模型結果 tibble
+
+run_ordinal_interaction_model <- function(data, outcome_var, exposure_var, strata_var) {
+  
+  formula_int <- as.formula(paste0("`", outcome_var, "` ~ `", exposure_var, "` * `", strata_var, "`"))
+  
+  model_fit <- tryCatch(
+    MASS::polr(formula_int, data = as.data.frame(data), Hess = TRUE),
+    error = function(e) {
+      message(paste("Interaction model failed:", e$message))
+      return(NULL)
+    }
+  )
+  
+  if (is.null(model_fit)) return(NULL)
+  
+  coef_table <- coef(summary(model_fit))
+  p_values <- 2 * pt(abs(coef_table[, "t value"]), df = df.residual(model_fit), lower.tail = FALSE)
+  
+  # 【全新寫法】直接用 data.frame() 創建最終結果，不再使用 select 或 rename
+  results_df <- data.frame(
+    term = rownames(coef_table),
+    estimate = coef_table[, "Value"],
+    std.error = coef_table[, "Std. Error"],
+    statistic = coef_table[, "t value"],
+    p.value = p_values
+  )
+  rownames(results_df) <- NULL 
+  
+  return(results_df)
+}
+
+
+# --- run_ordinal_simple_model (已徹底修正) ---
+run_ordinal_simple_model <- function(data, outcome_var, exposure_var) {
+  
+  formula_simple <- as.formula(paste0("`", outcome_var, "` ~ `", exposure_var, "`"))
+  
+  if(nrow(data) < 10) { 
+    message("Skipping simple model due to small sample size.")
+    return(NULL)
+  }
+  
+  model_fit <- tryCatch(
+    MASS::polr(formula_simple, data = as.data.frame(data), Hess = TRUE),
+    error = function(e) {
+      message(paste("Simple model failed:", e$message))
+      return(NULL)
+    }
+  )
+  
+  if (is.null(model_fit)) return(NULL)
+  
+  coef_table <- coef(summary(model_fit))
+  p_values <- 2 * pt(abs(coef_table[, "t value"]), df = df.residual(model_fit), lower.tail = FALSE)
+  
+  # 【全新寫法】直接用 data.frame() 創建最終結果
+  results_df <- data.frame(
+    term = rownames(coef_table),
+    estimate = coef_table[, "Value"],
+    std.error = coef_table[, "Std. Error"],
+    statistic = coef_table[, "t value"],
+    p.value = p_values
+  )
+  rownames(results_df) <- NULL
+  
+  # 只返回暴露變量的結果
+  return(results_df %>% filter(term == exposure_var))
+}
+# In functions.R
+
+#' 生成【有序模型】的亞組分析報告片段 (Markdown 格式)
+#' @param pollutant 污染物基礎名稱 (例如 "AQI")
+#' @param strata_variable 分層變量名稱 (例如 "age_group_specific")
+#' @param outcome 分析的結局變量 (例如 "CSFrank")
+#' @param prepared_data 包含結局、分層變量和滯後暴露的數據框
+#' @return 一個包含 Markdown 文本的字符串
+
+generate_ordinal_subgroup_report <- function(pollutant, strata_variable, outcome, prepared_data) {
+  
+  markdown_parts <- list()
+  
+  # --- a. 交互作用模型 (保持不變) ---
+  markdown_parts[["interaction_header"]] <- "\n#### 交互作用模型\n"
+  interaction_results <- purrr::map_dfr(0:3, ~{
+    lag_col <- paste0(pollutant, "_M", .x)
+    if (!lag_col %in% names(prepared_data)) return(NULL)
+    run_ordinal_interaction_model(prepared_data, outcome, lag_col, strata_variable) %>% 
+      mutate(lag = .x, .before=1)
+  })
+  if (nrow(interaction_results) > 0) {
+    interaction_results <- interaction_results %>%
+      mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", "")))
+    md_interaction <- knitr::kable(interaction_results, format = "markdown", caption = "交互作用模型結果", digits = 4)
+    markdown_parts[["interaction_table"]] <- paste(md_interaction, collapse = "\n")
+  } else {
+    markdown_parts[["interaction_table"]] <- "<p><i>(交互作用模型運行失敗或無結果)</i></p>"
+  }
+  
+  # --- b. 分層分析模型 (已修正) ---
+  markdown_parts[["stratified_header"]] <- "\n#### 分層分析\n"
+  strata_levels <- levels(prepared_data[[strata_variable]])
+  
+  stratified_results <- purrr::map_dfr(strata_levels, ~{
+    current_stratum_level <- .x
+    stratum_data <- filter(prepared_data, !!sym(strata_variable) == current_stratum_level)
+    
+    purrr::map_dfr(0:3, ~{
+      lag_col <- paste0(pollutant, "_M", .x)
+      if (!lag_col %in% names(stratum_data)) return(NULL)
+      
+      # 【關鍵修正】運行模型並添加 lag 和分層變數後，【不再需要 select】
+      run_ordinal_simple_model(
+        data = stratum_data,
+        outcome_var = outcome,
+        exposure_var = lag_col
+      ) %>% 
+        mutate(lag = .x, !!strata_variable := current_stratum_level, .before = 1) 
+      # --- 刪除了錯誤的 select() 這一行 ---
+    })
+  })
+  
+  if (nrow(stratified_results) > 0) {
+    stratified_results <- stratified_results %>%
+      mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", "")))
+    md_stratified <- knitr::kable(stratified_results, format = "markdown", caption = "按亞組分層分析結果", digits = 4)
+    markdown_parts[["stratified_table"]] <- paste(md_stratified, collapse = "\n")
+  } else {
+    markdown_parts[["stratified_table"]] <- "<p><i>(分層分析模型運行失敗或無結果)</i></p>"
+  }
+  
+  # --- c. 組合所有部分 (保持不變) ---
+  final_md <- paste(markdown_parts, collapse = "\n")
+  return(final_md)
+}
+# In functions.R
+
+#' 運行【邏輯斯蒂】交互作用模型 (glm binomial)
+#' @param data 數據框
+#' @param outcome_var 二元因變量名稱
+#' @param exposure_var 單個暴露變量名稱 (例如 "AQI_M0")
+#' @param strata_var 分層變量名稱 (例如 "age_group_specific")
+#' @return 整理好的模型結果 tibble (來自 broom::tidy)
+
+run_logistic_interaction_model <- function(data, outcome_var, exposure_var, strata_var) {
+  
+  formula_int <- as.formula(paste0("`", outcome_var, "` ~ `", exposure_var, "` * `", strata_var, "`"))
+  
+  model_fit <- tryCatch(
+    glm(formula_int, data = as.data.frame(data), family = binomial(link = "logit")), # 強制 data.frame
+    error = function(e) {
+      message(paste("Logistic interaction model failed:", e$message))
+      return(NULL)
+    }
+  )
+  
+  if (is.null(model_fit)) return(NULL)
+  
+  return(broom::tidy(model_fit))
+}
+
+
+#' 運行【邏輯斯蒂】簡單模型 (glm binomial) - 用於分層分析
+#' @param data 數據框 (通常是已按亞組過濾的子集)
+#' @param outcome_var 二元因變量名稱
+#' @param exposure_var 單個暴露變量名稱 (例如 "AQI_M0")
+#' @return 整理好的模型結果 tibble (來自 broom::tidy, 只含暴露項)
+
+run_logistic_simple_model <- function(data, outcome_var, exposure_var) {
+  
+  formula_simple <- as.formula(paste0("`", outcome_var, "` ~ `", exposure_var, "`"))
+  
+  if(nrow(data) < 10) { 
+    message("Skipping simple logistic model due to small sample size.")
+    return(NULL)
+  }
+  
+  model_fit <- tryCatch(
+    glm(formula_simple, data = as.data.frame(data), family = binomial(link = "logit")),
+    error = function(e) {
+      message(paste("Simple logistic model failed:", e$message))
+      return(NULL)
+    }
+  )
+  
+  if (is.null(model_fit)) return(NULL)
+  
+  # 使用 broom::tidy 並只返回暴露變量的結果
+  return(broom::tidy(model_fit) %>% filter(term == exposure_var))
+}
+
+# In functions.R
+
+#' 生成【邏輯斯蒂模型】的亞組分析報告片段 (Markdown 格式) - 已修正 select 衝突
+#' @param pollutant 污染物基礎名稱
+#' @param strata_variable 分層變量名稱
+#' @param outcome 分析的結局變量 (二元)
+#' @param prepared_data 準備好的數據框
+#' @return 一個包含 Markdown 文本的字符串
+
+generate_logistic_subgroup_report <- function(pollutant, strata_variable, outcome, prepared_data) {
+  
+  markdown_parts <- list()
+  
+  # --- a. 交互作用模型 (保持不變) ---
+  markdown_parts[["interaction_header"]] <- "\n#### 交互作用模型 (Logistic)\n"
+  interaction_results <- purrr::map_dfr(0:3, ~{
+    lag_col <- paste0(pollutant, "_M", .x)
+    if (!lag_col %in% names(prepared_data)) return(NULL)
+    run_logistic_interaction_model(prepared_data, outcome, lag_col, strata_variable) %>%
+      mutate(lag = .x, .before=1)
+  })
+  if (nrow(interaction_results) > 0) {
+    interaction_results <- interaction_results %>%
+      mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", "")))
+    md_interaction <- knitr::kable(interaction_results, format = "markdown", caption = "交互作用模型结果 (Logistic)", digits = 4)
+    markdown_parts[["interaction_table"]] <- paste(md_interaction, collapse = "\n")
+  } else {
+    markdown_parts[["interaction_table"]] <- "<p><i>(交互作用模型運行失敗或無結果)</i></p>"
+  }
+  
+  # --- b. 分層分析模型 (已修正 select) ---
+  markdown_parts[["stratified_header"]] <- "\n#### 分层分析 (Logistic)\n"
+  strata_levels <- levels(prepared_data[[strata_variable]])
+  
+  stratified_results <- purrr::map_dfr(strata_levels, ~{
+    current_stratum_level <- .x
+    stratum_data <- filter(prepared_data, !!sym(strata_variable) == current_stratum_level)
+    purrr::map_dfr(0:3, ~{
+      lag_col <- paste0(pollutant, "_M", .x)
+      if (!lag_col %in% names(stratum_data)) return(NULL)
+      run_logistic_simple_model(stratum_data, outcome, lag_col) %>%
+        mutate(lag = .x, !!strata_variable := current_stratum_level, .before = 1)
+      # --- NO SELECT NEEDED HERE ANYMORE after previous run_logistic_simple_model change ---
+      # run_logistic_simple_model now only returns the exposure term row
+    })
+  })
+  
+  if (nrow(stratified_results) > 0) {
+    # 【關鍵修正】明確使用 dplyr::select
+    # 而且 run_logistic_simple_model return 的已經是需要的列，但需要確保列名一致
+    # run_logistic_simple_model returns: term, estimate, std.error, statistic, p.value
+    # We added lag and strata_variable before.
+    stratified_results_final <- stratified_results %>%
+      # Ensure the dynamic strata column name is kept, along with others
+      dplyr::select(!!sym(strata_variable), lag, estimate, std.error, p.value) %>% # Explicitly use dplyr::select
+      mutate(signif = cut(p.value, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", ".", "")))
+    
+    md_stratified <- knitr::kable(stratified_results_final, format = "markdown", caption = "按亚组分层分析结果 (Logistic)", digits = 4)
+    markdown_parts[["stratified_table"]] <- paste(md_stratified, collapse = "\n")
+  } else {
+    markdown_parts[["stratified_table"]] <- "<p><i>(分層分析模型運行失敗或無結果)</i></p>"
+  }
+  
+  # --- c. 組合所有部分 (保持不變) ---
+  final_md <- paste(markdown_parts, collapse = "\n")
+  return(final_md)
+}
+
+# In functions.R
+
+#' 運行一個包含所有滯後項的【有序迴歸 DLM】模型
+#'
+#' @param data 數據框
+#' @param pollutant_name 污染物基礎名稱 (例如, "AQI")
+#' @param outcome_var 有序因變量名稱 (例如, "CSFrank")
+#' @return 包含所有滯後項係數、標準誤等信息的數據框
+
+run_ordinal_dlm <- function(data, pollutant_name, outcome_var) {
+  
+  # 1. 構建包含所有 4 個滯後項的公式
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  
+  # 檢查數據中是否存在所有需要的列
+  if (!all(lag_cols %in% names(data))) {
+    warning(paste("數據中缺少一個或多個滯後列:", paste(lag_cols, collapse=", ")))
+    return(NULL)
+  }
+  
+  formula_dlm <- as.formula(paste0("`", outcome_var, "` ~ ", paste(lag_cols, collapse = " + ")))
+  
+  # 2. 運行 clm() 模型 (來自 ordinal 包)
+  #    我們使用 tryCatch 來處理模型不收斂等問題
+  model_fit <- tryCatch({
+    ordinal::clm(formula_dlm, data = as.data.frame(data), Hess = TRUE) # Hess=TRUE 用於計算標準誤
+  }, error = function(e) {
+    message(paste("Ordinal DLM model failed for:", pollutant_name, "-", e$message))
+    return(NULL)
+  })
+  
+  if (is.null(model_fit)) {
+    return(NULL)
+  }
+  
+  # 3. 提取結果並整理
+  #    broom::tidy 對 clm 的支持很好
+  tidy_results <- broom::tidy(model_fit)
+  
+  # 4. 篩選出我們只關心的污染物滯後項
+  pollutant_results <- tidy_results %>%
+    filter(term %in% lag_cols) %>%
+    # 從 term 中提取 lag 數字
+    mutate(
+      pollutant = pollutant_name,
+      lag = as.numeric(stringr::str_extract(term, "\\d+$")) # 提取 M 後面的數字
+    ) %>%
+    # 只保留繪圖需要的列
+    select(pollutant, lag, estimate, std.error)
+  
+  return(pollutant_results)
+}
+
+#' 運行一個 DLM 模型，並【自動檢測】結局類型（二元 vs. 有序）
+#'
+#' @param data 數據框
+#' @param pollutant_name 污染物基礎名稱 (例如, "AQI")
+#' @param outcome_var 結局變量名稱 (二元或有序因子)
+#' @return 包含所有滯後項係數、標準誤等信息的數據框
+
+run_dlm_auto <- function(data, pollutant_name, outcome_var) {
+  
+  # 1. 檢查結局變量類型
+  data <- as.data.frame(data) # 確保是標準 data.frame
+  valid_data <- data[!is.na(data[[outcome_var]]), ] # 移除 NA
+  
+  if (nrow(valid_data) == 0) return(NULL) # 如果沒有有效數據
+  
+  n_levels <- length(unique(valid_data[[outcome_var]]))
+  is_ord <- is.ordered(valid_data[[outcome_var]])
+  
+  model_type <- NULL
+  if (n_levels == 2) {
+    model_type <- "logistic"
+  } else if (n_levels >= 3 && is_ord) {
+    model_type <- "ordinal"
+  } else {
+    # 如果是 <2 個級別，或 >=3 個級別但【無序】，則跳過
+    message(paste("Skipping", outcome_var, ": not a binary or ordered-ordinal factor."))
+    return(NULL)
+  }
+  
+  # 2. 構建 DLM 公式
+  lag_cols <- paste0(pollutant_name, "_M", 0:3)
+  if (!all(lag_cols %in% names(data))) {
+    warning(paste("數據中缺少", pollutant_name, "的滯後列"))
+    return(NULL)
+  }
+  formula_dlm <- as.formula(paste0("`", outcome_var, "` ~ ", paste(lag_cols, collapse = " + ")))
+  
+  # 3. 根據類型運行合適的模型
+  model_fit <- NULL
+  if (model_type == "logistic") {
+    model_fit <- tryCatch({
+      glm(formula_dlm, data = valid_data, family = binomial(link = "logit"))
+    }, error = function(e) NULL)
+  } else if (model_type == "ordinal") {
+    model_fit <- tryCatch({
+      ordinal::clm(formula_dlm, data = valid_data, Hess = TRUE)
+    }, error = function(e) NULL)
+  }
+  
+  if (is.null(model_fit)) {
+    message(paste("Model failed for", pollutant_name, "on", outcome_var))
+    return(NULL)
+  }
+  
+  # 4. 提取結果 (broom::tidy 對 clm 和 glm 都有效)
+  tidy_results <- broom::tidy(model_fit)
+  
+  pollutant_results <- tidy_results %>%
+    filter(term %in% lag_cols) %>%
+    mutate(
+      pollutant = pollutant_name,
+      lag = as.numeric(stringr::str_extract(term, "\\d+$"))
+    ) %>%
+    select(pollutant, lag, estimate, std.error)
+  
+  return(pollutant_results)
+}
+
+run_single_lag_auto <- function(data, pollutant_col, outcome_var) {
+  
+  # 1. 準備數據和檢查結局類型
+  data <- as.data.frame(data)
+  
+  # 只使用對當前結局和當前污染物都有效的數據
+  valid_data <- data[!is.na(data[[outcome_var]]) & !is.na(data[[pollutant_col]]), ]
+  
+  if (nrow(valid_data) == 0) return(NULL) # 如果沒有重疊數據
+  
+  n_levels <- length(unique(valid_data[[outcome_var]]))
+  is_ord <- is.ordered(valid_data[[outcome_var]])
+  
+  model_type <- NULL
+  if (n_levels == 2) {
+    model_type <- "logistic"
+  } else if (n_levels >= 3 && is_ord) {
+    model_type <- "ordinal"
+  } else {
+    return(NULL) # 數據類型不符
+  }
+  
+  # 2. 構建【簡單】模型公式
+  formula_simple <- as.formula(paste0("`", outcome_var, "` ~ `", pollutant_col, "`"))
+  
+  # 3. 檢查樣本量是否足夠（每 1 個預測變量，至少需要 10 個事件）
+  if (model_type == "logistic") {
+    events <- min(table(valid_data[[outcome_var]]))
+    if (events < 10) { # 樣本量過小，跳過
+      message(paste("Skipping", pollutant_col, "on", outcome_var, ": too few events (", events, ")"))
+      return(NULL) 
+    }
+  } else {
+    if (nrow(valid_data) < 50) { # 對有序模型使用更嚴格的總樣本量
+      message(paste("Skipping", pollutant_col, "on", outcome_var, ": too small sample size (", nrow(valid_data), ")"))
+      return(NULL)
+    }
+  }
+  
+  # 4. 根據類型運行合適的模型
+  model_fit <- NULL
+  if (model_type == "logistic") {
+    model_fit <- tryCatch({
+      glm(formula_simple, data = valid_data, family = binomial(link = "logit"))
+    }, error = function(e) NULL)
+  } else if (model_type == "ordinal") {
+    model_fit <- tryCatch({
+      ordinal::clm(formula_simple, data = valid_data, Hess = TRUE)
+    }, error = function(e) NULL)
+  }
+  
+  if (is.null(model_fit)) {
+    message(paste("Model failed for", pollutant_col, "on", outcome_var))
+    return(NULL)
+  }
+  
+  # 5. 提取結果
+  tidy_results <- broom::tidy(model_fit)
+  
+  pollutant_results <- tidy_results %>%
+    filter(term == pollutant_col) %>%
+    select(estimate, std.error)
+  
+  # 確保返回的是單行數據框
+  if(nrow(pollutant_results) == 1) {
+    return(pollutant_results)
+  } else {
+    return(NULL)
+  }
 }
