@@ -110,6 +110,64 @@ results_df <- results_df %>%
   ) %>%
   filter(!is.na(Lag.Num))
 
+# # ============================
+# # 6. Create 7 Individual Plots (One per Pollutant)
+# # ============================
+# # Get pollutants in desired order
+# pollutants_plot <- c("AQI", "NO2", "O3", "CO", "PM10", "PM2.5", "SO2")
+# 
+# # Create list of individual plots
+# plot_list <- lapply(pollutants_plot, function(poll) {
+#   df_sub <- results_df %>% filter(Pollutant == poll)
+#   
+#   p <- ggplot(df_sub, aes(x = Lag.Num, y = estimate, ymin = conf.low, ymax = conf.high)) +
+#     geom_point(color = "red", size = 3) +
+#     geom_errorbar(width = 0.2, color = "gray50", size = 0.8) +
+#     geom_hline(yintercept = 1, linetype = "dashed", color = "black", size = 0.6) +
+#     labs(
+#       x = "Lag (months)",
+#       y = "Odds Ratio (OR)",
+#       title = poll
+#     ) +
+#     theme_minimal() +
+#     theme(
+#       panel.border = element_rect(color = "black", fill = NA, size = 1),
+#       panel.background = element_blank(),
+#       panel.grid.major = element_line(color = "gray90", size = 0.3),
+#       panel.grid.minor = element_blank(),
+#       axis.line = element_line(color = "black", size = 0.5),
+#       axis.ticks = element_line(color = "black", size = 0.5),
+#       axis.text = element_text(size = 12, color = "black"),
+#       axis.title = element_text(size = 13, color = "black"),
+#       plot.title = element_text(hjust = 0.5, size = 15, color = "black"),
+#       plot.margin = margin(10, 10, 10, 10),
+#       axis.title.y = element_text(angle = 90, vjust = 0.5),
+#       aspect.ratio = 1  # ← This is the KEY: forces square panels
+#     ) +
+#     scale_x_continuous(
+#       breaks = c(0, 1, 2, 3), 
+#       labels = c("0", "1", "2", "3"),
+#       expand = expansion(add = c(0.1, 0.1))
+#     )
+#   
+#   return(p)
+# })
+# 
+# # ============================
+# # 7. Combine All 7 Plots in a Single Row
+# # ============================
+# p_combined <- plot_list[[1]] + plot_list[[2]] + plot_list[[3]] + plot_list[[5]] + 
+#   plot_list[[6]] + plot_list[[7]] + plot_list[[4]] +
+#   plot_annotation(title = "Anti-NMDAR Antibody Titer in CSF",
+#                   theme = theme(plot.title = element_text(hjust = 0.5, size = 17, color = "black")))
+# 
+# # Display plot
+# print(p_combined)
+# 
+# # Optional: Save as PNG with width=12, height=15
+# ggsave("NMDAR_antibody.png", p_combined, width = 12, height = 15, dpi = 300, units = "in")
+
+
 # ============================
 # 6. Create 7 Individual Plots (One per Pollutant)
 # ============================
@@ -120,13 +178,32 @@ pollutants_plot <- c("AQI", "NO2", "O3", "CO", "PM10", "PM2.5", "SO2")
 plot_list <- lapply(pollutants_plot, function(poll) {
   df_sub <- results_df %>% filter(Pollutant == poll)
   
-  p <- ggplot(df_sub, aes(x = Lag.Num, y = estimate, ymin = conf.low, ymax = conf.high)) +
+  # Apply transformation based on pollutant
+  if (poll == "CO") {
+    df_sub <- df_sub %>%
+      mutate(
+        y = estimate^0.1,
+        ymin = conf.low^0.1,
+        ymax = conf.high^0.1
+      )
+    y_label <- "Odds Ratio (per 100ug)"
+  } else {
+    df_sub <- df_sub %>%
+      mutate(
+        y = estimate^10,
+        ymin = conf.low^10,
+        ymax = conf.high^10
+      )
+    y_label <- "Odds Ratio (per 10ug)"
+  }
+  
+  p <- ggplot(df_sub, aes(x = Lag.Num, y = y, ymin = ymin, ymax = ymax)) +
     geom_point(color = "red", size = 3) +
     geom_errorbar(width = 0.2, color = "gray50", size = 0.8) +
     geom_hline(yintercept = 1, linetype = "dashed", color = "black", size = 0.6) +
     labs(
       x = "Lag (months)",
-      y = "Odds Ratio (OR)",
+      y = y_label,  # ← Dynamically set based on pollutant
       title = poll
     ) +
     theme_minimal() +
@@ -142,7 +219,7 @@ plot_list <- lapply(pollutants_plot, function(poll) {
       plot.title = element_text(hjust = 0.5, size = 15, color = "black"),
       plot.margin = margin(10, 10, 10, 10),
       axis.title.y = element_text(angle = 90, vjust = 0.5),
-      aspect.ratio = 1  # ← This is the KEY: forces square panels
+      aspect.ratio = 1
     ) +
     scale_x_continuous(
       breaks = c(0, 1, 2, 3), 
@@ -166,6 +243,7 @@ print(p_combined)
 
 # Optional: Save as PNG with width=12, height=15
 ggsave("NMDAR_antibody.png", p_combined, width = 12, height = 15, dpi = 300, units = "in")
+
 
 # ============================
 # 7. Create Clean Results Table (Include CO, OR, 95% CI, p-value)
