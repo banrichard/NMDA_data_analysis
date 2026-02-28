@@ -208,7 +208,7 @@ plot_list <- lapply(pollutants_plot, function(poll) {
 # ============================
 p_combined <- plot_list[[1]] + plot_list[[2]] + plot_list[[3]] + plot_list[[5]] + 
   plot_list[[6]] + plot_list[[7]] + plot_list[[4]] +
-  plot_annotation(title = "Impact of Pollutants on Psychiatric Symptoms",
+  plot_annotation(title = "Impact of Air Pollutants on Psychiatric Symptoms",
                   theme = theme(plot.title = element_text(hjust = 0.5, size = 17, color = "black")))
 
 # Display plot
@@ -221,12 +221,38 @@ ggsave("NMDAR_PsychiatricSymptoms.png", p_combined, width = 12, height = 15, dpi
 # 8. Create Clean Results Table (Include CO, OR, 95% CI, p-value)
 # ============================
 
-# Create clean table
+# # Create clean table
+# table_df <- results_df %>%
+#   select(Pollutant, Lag, estimate, conf.low, conf.high, p.value) %>%
+#   mutate(
+#     `Odds Ratio (OR)` = round(estimate, 4),
+#     `95% CI` = paste0(round(conf.low, 4), " – ", round(conf.high, 4)),
+#     `p-value` = ifelse(p.value < 0.001, 
+#                        format(p.value, scientific = TRUE, digits = 2),
+#                        round(p.value, 4)),
+#     `Pollutant & Lag` = paste(Pollutant, Lag, sep = "_")
+#   ) %>%
+#   arrange(Pollutant, Lag) %>%
+#   select(`Pollutant & Lag`, `Odds Ratio (OR)`, `95% CI`, `p-value`)
+
+library(writexl)
+
+# Create clean table with transformed ORs and CIs
 table_df <- results_df %>%
   select(Pollutant, Lag, estimate, conf.low, conf.high, p.value) %>%
   mutate(
-    `Odds Ratio (OR)` = round(estimate, 4),
-    `95% CI` = paste0(round(conf.low, 4), " – ", round(conf.high, 4)),
+    # Apply transformation based on pollutant
+    transformed_estimate = ifelse(Pollutant == "CO", estimate^0.1, estimate^10),
+    transformed_conf.low = ifelse(Pollutant == "CO", conf.low^0.1, conf.low^10),
+    transformed_conf.high = ifelse(Pollutant == "CO", conf.high^0.1, conf.high^10),
+    
+    # Format for display
+    `Odds Ratio (OR)` = round(transformed_estimate, 4),
+    `95% CI` = paste0(
+      round(transformed_conf.low, 4), 
+      " – ", 
+      round(transformed_conf.high, 4)
+    ),
     `p-value` = ifelse(p.value < 0.001, 
                        format(p.value, scientific = TRUE, digits = 2),
                        round(p.value, 4)),
@@ -234,6 +260,12 @@ table_df <- results_df %>%
   ) %>%
   arrange(Pollutant, Lag) %>%
   select(`Pollutant & Lag`, `Odds Ratio (OR)`, `95% CI`, `p-value`)
+
+# Export to Excel file
+write_xlsx(table_df, "NMDAR_antibody.xlsx")
+
+# Optional: Print to console for quick check
+print(table_df)
 
 # Export to Excel file (simplified name)
 write_xlsx(table_df, "NMDAR_PsychiatricSymptoms.xlsx")

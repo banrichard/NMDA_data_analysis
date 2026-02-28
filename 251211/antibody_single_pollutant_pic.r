@@ -249,14 +249,43 @@ ggsave("NMDAR_antibody.png", p_combined, width = 12, height = 15, dpi = 300, uni
 # 7. Create Clean Results Table (Include CO, OR, 95% CI, p-value)
 # ============================
 
+# library(writexl)
+# 
+# # Create clean table (include CO, OR, 95% CI, p-value)
+# table_df <- results_df %>%
+#   select(Pollutant, Lag, estimate, conf.low, conf.high, p.value) %>%
+#   mutate(
+#     `Odds Ratio (OR)` = round(estimate, 4),
+#     `95% CI` = paste0(round(conf.low, 4), " – ", round(conf.high, 4)),
+#     `p-value` = ifelse(p.value < 0.001, 
+#                        format(p.value, scientific = TRUE, digits = 2),
+#                        round(p.value, 4)),
+#     `Pollutant & Lag` = paste(Pollutant, Lag, sep = "_")
+#   ) %>%
+#   arrange(Pollutant, Lag) %>%
+#   select(`Pollutant & Lag`, `Odds Ratio (OR)`, `95% CI`, `p-value`)
+# 
+# # Export to Excel file
+# write_xlsx(table_df, "NMDAR_antibody.xlsx")
+
 library(writexl)
 
-# Create clean table (include CO, OR, 95% CI, p-value)
+# Create clean table with transformed ORs and CIs
 table_df <- results_df %>%
   select(Pollutant, Lag, estimate, conf.low, conf.high, p.value) %>%
   mutate(
-    `Odds Ratio (OR)` = round(estimate, 4),
-    `95% CI` = paste0(round(conf.low, 4), " – ", round(conf.high, 4)),
+    # Apply transformation based on pollutant
+    transformed_estimate = ifelse(Pollutant == "CO", estimate^0.1, estimate^10),
+    transformed_conf.low = ifelse(Pollutant == "CO", conf.low^0.1, conf.low^10),
+    transformed_conf.high = ifelse(Pollutant == "CO", conf.high^0.1, conf.high^10),
+    
+    # Format for display
+    `Odds Ratio (OR)` = round(transformed_estimate, 4),
+    `95% CI` = paste0(
+      round(transformed_conf.low, 4), 
+      " – ", 
+      round(transformed_conf.high, 4)
+    ),
     `p-value` = ifelse(p.value < 0.001, 
                        format(p.value, scientific = TRUE, digits = 2),
                        round(p.value, 4)),
@@ -267,5 +296,8 @@ table_df <- results_df %>%
 
 # Export to Excel file
 write_xlsx(table_df, "NMDAR_antibody.xlsx")
+
+# Optional: Print to console for quick check
+print(table_df)
 
 
