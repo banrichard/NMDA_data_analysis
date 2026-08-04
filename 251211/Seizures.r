@@ -165,6 +165,14 @@ plot_list <- lapply(pollutants_plot, function(poll) {
         ymax = conf.high^0.1
       )
     y_label <- "Odds Ratio (per 100ug)"
+  }else if (poll == "AQI") {
+    df_sub <- df_sub %>%
+      mutate(
+        y = estimate^1,
+        ymin = conf.low^1,
+        ymax = conf.high^1
+      )
+    y_label <- "Odds Ratio"
   } else {
     df_sub <- df_sub %>%
       mutate(
